@@ -19,6 +19,10 @@ use crate::theme;
 const PAD: f32 = 10.0;
 const SCAN_STEP: f32 = 3.0;
 const BAR_H: f32 = 24.0;
+/// Thickness of the cabinet face visible around the glass.
+const BEZEL: f32 = 22.0;
+/// The tube face is not a rectangle: this is the round-over at each corner.
+const GLASS_R: u8 = 18;
 /// Thickness of the invisible resize border along the window edge.
 const EDGE_HIT: f32 = 7.0;
 
@@ -129,7 +133,7 @@ impl App {
         egui::Panel::top("bar")
             .frame(
                 egui::Frame::NONE
-                    .fill(theme::BG)
+                    .fill(theme::CABINET_TOP)
                     .inner_margin(Margin { left: 6, right: 6, top: 3, bottom: 3 }),
             )
             .show(ui, |ui| {
@@ -267,7 +271,8 @@ impl App {
             )
         });
 
-        let inner = rect.shrink(PAD);
+        let glass = rect.shrink(BEZEL);
+        let inner = glass.shrink(PAD);
         let cols = ((inner.width() / cw).floor() as i64).clamp(8, 1000) as u16;
         let rows = ((inner.height() / rh).floor() as i64).clamp(4, 400) as u16;
 
@@ -282,20 +287,35 @@ impl App {
         let t = self.started.elapsed().as_secs_f32();
         let open = ease_out((t / 0.55).clamp(0.0, 1.0));
         let vis = if open < 1.0 {
-            let h = (rect.height() * open).max(1.5);
-            Rect::from_center_size(rect.center(), vec2(rect.width(), h))
+            let h = (glass.height() * open).max(1.5);
+            Rect::from_center_size(glass.center(), vec2(glass.width(), h))
         } else {
-            rect
+            glass
         };
 
-        let painter = ui.painter_at(vis);
-        painter.rect_filled(vis, CornerRadius::ZERO, theme::SCREEN);
+        let painter = ui.painter_at(rect);
+        cabinet(&painter, rect, glass, t);
+        let face = CornerRadius::same(if open < 1.0 { 0 } else { GLASS_R });
+        painter.rect_filled(vis, face, theme::SCREEN);
+        haze(&painter, vis);
 
         let screen = self.term.screen();
         let rows = self.term.rows;
         let cols = self.term.cols;
         /* phosphor brightness is never perfectly steady */
         let flick = 1.0 + 0.016 * (t * 43.0).sin() + 0.010 * (t * 7.3).sin();
+        /* horizontal sync: now and then the tube loses the line and the picture
+        steps sideways for a frame or two */
+        let dx = {
+            let beat = (t % 9.3) / 9.3;
+            if beat < 0.007 {
+                2.5
+            } else if beat < 0.012 {
+                -1.5
+            } else {
+                0.0
+            }
+        };
 
         for r in 0..rows {
             let y = inner.top() + r as f32 * rh;
@@ -340,7 +360,7 @@ impl App {
                     flush(
                         &painter,
                         &mut run,
-                        run_x,
+                        run_x + dx,
                         y,
                         rh,
                         &font,
@@ -355,7 +375,7 @@ impl App {
             flush(
                 &painter,
                 &mut run,
-                run_x,
+                run_x + dx,
                 y,
                 rh,
                 &font,
@@ -369,7 +389,7 @@ impl App {
             if cr < rows && cc < cols {
                 painter.rect_filled(
                     Rect::from_min_size(
-                        pos2(inner.left() + cc as f32 * cw, inner.top() + cr as f32 * rh),
+                        pos2(inner.left() + cc as f32 * cw + dx, inner.top() + cr as f32 * rh),
                         vec2(cw, rh),
                     ),
                     CornerRadius::ZERO,
@@ -379,16 +399,22 @@ impl App {
         }
 
         if self.scanlines {
-            let mut shapes = Vec::with_capacity((vis.height() / SCAN_STEP) as usize + 2);
-            let mut y = vis.top();
-            /* the gap lines are what sell the tube; hard edges, no blur */
-            let stroke = Stroke::new(1.0, Color32::from_rgba_unmultiplied(0, 0, 0, 40));
+            /* The gap rows are what sell the tube. They are filled bands snapped
+            to whole device pixels — a stroked line gets antialiased across two
+            rows and the contrast halves, which is how you end up with a picture
+            that just looks like amber text on black. */
+            let ppp = ui.ctx().pixels_per_point().max(0.5);
+            let step = ((SCAN_STEP * ppp).round().max(2.0)) / ppp;
+            let h = (1.0 / ppp).max(0.5);
+            let mut shapes = Vec::with_capacity((vis.height() / step) as usize + 2);
+            let mut y = (vis.top() * ppp).round() / ppp;
             while y < vis.bottom() {
-                shapes.push(Shape::line_segment(
-                    [pos2(vis.left(), y), pos2(vis.right(), y)],
-                    stroke,
+                shapes.push(Shape::rect_filled(
+                    Rect::from_min_max(pos2(vis.left(), y), pos2(vis.right(), y + h)),
+                    CornerRadius::ZERO,
+                    Color32::from_black_alpha(124),
                 ));
-                y += SCAN_STEP;
+                y += step;
             }
             painter.extend(shapes);
         }
@@ -432,6 +458,7 @@ impl App {
         }
 
         vignette(&painter, vis);
+        glass_rim(&painter, vis);
 
         /* glass: one soft highlight in the top-left, the way a curved face
         catches a room light */
@@ -510,15 +537,16 @@ fn flush(
     let text = run.trim_end();
     if !text.is_empty() {
         let base = pos2(x, y + rh * 0.5);
-        /* bloom on the cheap: two dim copies either side of the glyphs, plus a
-        half-pixel repeat so thin pixel lettering does not read as washed out */
-        let halo = color.gamma_multiply(0.20);
-        let bloom = color.gamma_multiply(0.13);
-        painter.text(base + vec2(-2.6, 0.0), Align2::LEFT_CENTER, text, font.clone(), bloom);
-        painter.text(base + vec2(2.6, 0.0), Align2::LEFT_CENTER, text, font.clone(), bloom);
-        painter.text(base + vec2(-1.4, 0.0), Align2::LEFT_CENTER, text, font.clone(), halo);
-        painter.text(base + vec2(1.4, 0.0), Align2::LEFT_CENTER, text, font.clone(), halo);
-        painter.text(base + vec2(0.5, 0.0), Align2::LEFT_CENTER, text, font.clone(), color);
+        /* bloom on the cheap: one wide dim copy each side for the halo the glass
+        picks up, one tight pair to thicken the stroke. Any more than this and the
+        letters turn into blobs and the scanline cuts stop reading. */
+        let halo = color.gamma_multiply(0.26);
+        let bloom = color.gamma_multiply(0.09);
+        painter.text(base + vec2(-2.4, 0.0), Align2::LEFT_CENTER, text, font.clone(), bloom);
+        painter.text(base + vec2(2.4, 0.0), Align2::LEFT_CENTER, text, font.clone(), bloom);
+        painter.text(base + vec2(-1.0, 0.0), Align2::LEFT_CENTER, text, font.clone(), halo);
+        painter.text(base + vec2(1.0, 0.0), Align2::LEFT_CENTER, text, font.clone(), halo);
+        painter.text(base + vec2(0.0, 0.5), Align2::LEFT_CENTER, text, font.clone(), color);
         painter.text(base, Align2::LEFT_CENTER, text, font.clone(), color);
     }
     run.clear();
@@ -586,6 +614,75 @@ fn ease_out(t: f32) -> f32 {
     1.0 - (1.0 - t).powi(3)
 }
 
+/// The plastic around the tube: a top-lit cabinet, a black recess where the
+/// glass meets it, and a hairline of room light on the rim.
+fn cabinet(p: &egui::Painter, outer: Rect, glass: Rect, t: f32) {
+    quad_grad(
+        p,
+        [
+            outer.left_top(),
+            outer.right_top(),
+            outer.right_bottom(),
+            outer.left_bottom(),
+        ],
+        [
+            theme::CABINET_TOP,
+            theme::CABINET_TOP,
+            theme::CABINET_BOT,
+            theme::CABINET_BOT,
+        ],
+    );
+
+    let r = CornerRadius::same(GLASS_R + 4);
+    /* the gap between plastic and glass is in shadow, always */
+    p.rect_stroke(
+        glass.expand(4.0),
+        r,
+        Stroke::new(6.0, Color32::from_black_alpha(238)),
+        StrokeKind::Middle,
+    );
+    p.rect_stroke(
+        glass.expand(7.5),
+        CornerRadius::same(GLASS_R + 8),
+        Stroke::new(1.0, Color32::from_rgba_unmultiplied(0xff, 0xc8, 0x78, 26)),
+        StrokeKind::Middle,
+    );
+
+    /* power lamp: breathing, never blinking */
+    let pulse = 0.68 + 0.18 * (t * 1.9).sin();
+    let led = pos2(outer.right() - 17.0, outer.bottom() - 11.0);
+    p.circle_filled(led, 4.5, Color32::from_rgba_unmultiplied(0xff, 0x9a, 0x20, (26.0 * pulse) as u8));
+    p.circle_filled(led, 2.0, Color32::from_rgba_unmultiplied(0xff, 0xb8, 0x1c, (235.0 * pulse) as u8));
+}
+
+/// Faint phosphor haze in the middle of the face. Without it the empty part of
+/// the screen is pure black and the glass stops reading as glass.
+fn haze(p: &egui::Painter, vis: Rect) {
+    let mid = Color32::from_rgba_unmultiplied(0xff, 0xc4, 0x60, 4);
+    let clear = Color32::TRANSPARENT;
+    let (l, r, t, b) = (vis.left(), vis.right(), vis.top(), vis.bottom());
+    let cy = vis.center().y;
+    quad_grad(p, [pos2(l, t), pos2(r, t), pos2(r, cy), pos2(l, cy)], [clear, clear, mid, mid]);
+    quad_grad(p, [pos2(l, cy), pos2(r, cy), pos2(r, b), pos2(l, b)], [mid, mid, clear, clear]);
+}
+
+/// Light caught on the inside of the glass, just off the bezel. Without this the
+/// screen edge is a hard cut and the face reads flat.
+fn glass_rim(p: &egui::Painter, glass: Rect) {
+    p.rect_stroke(
+        glass.shrink(0.5),
+        CornerRadius::same(GLASS_R),
+        Stroke::new(1.0, Color32::from_rgba_unmultiplied(0xff, 0xd2, 0x8a, 40)),
+        StrokeKind::Inside,
+    );
+    p.rect_stroke(
+        glass.shrink(3.5),
+        CornerRadius::same(GLASS_R.saturating_sub(3)),
+        Stroke::new(2.0, Color32::from_rgba_unmultiplied(0xff, 0xb0, 0x00, 14)),
+        StrokeKind::Inside,
+    );
+}
+
 /// One quad with per-corner colours. egui has no gradient primitive, but a
 /// vertex-coloured mesh is exactly that and costs nothing.
 fn quad_grad(p: &egui::Painter, pts: [egui::Pos2; 4], cols: [Color32; 4]) {
@@ -601,8 +698,8 @@ fn quad_grad(p: &egui::Painter, pts: [egui::Pos2; 4], cols: [Color32; 4]) {
 /// Darkens all four edges. Overlapping corners double up, which is what a real
 /// tube does too.
 fn vignette(p: &egui::Painter, rect: Rect) {
-    let d = (rect.width().min(rect.height()) * 0.13).max(20.0);
-    let dark = Color32::from_black_alpha(34);
+    let d = (rect.width().min(rect.height()) * 0.17).max(26.0);
+    let dark = Color32::from_black_alpha(46);
     let clear = Color32::TRANSPARENT;
     let (l, r, t, b) = (rect.left(), rect.right(), rect.top(), rect.bottom());
     quad_grad(

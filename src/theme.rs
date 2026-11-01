@@ -13,6 +13,9 @@ pub const BG: Color32 = Color32::from_rgb(0x14, 0x0d, 0x03);
 /// a hole in the machine instead of a filled rectangle.
 pub const SCREEN: Color32 = Color32::from_rgb(0x05, 0x03, 0x00);
 pub const BG_DEEP: Color32 = Color32::from_rgb(0x0a, 0x07, 0x02);
+/// Injection-moulded cabinet around the tube: warm dark plastic, top-lit.
+pub const CABINET_TOP: Color32 = Color32::from_rgb(0x2b, 0x21, 0x18);
+pub const CABINET_BOT: Color32 = Color32::from_rgb(0x10, 0x0b, 0x07);
 pub const AMBER: Color32 = Color32::from_rgb(0xff, 0xb0, 0x00);
 pub const AMBER_HOT: Color32 = Color32::from_rgb(0xff, 0xe0, 0xa3);
 pub const AMBER_DIM: Color32 = Color32::from_rgb(0xb8, 0x7c, 0x05);
