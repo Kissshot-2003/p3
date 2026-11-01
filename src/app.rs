@@ -7,7 +7,7 @@
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, CursorIcon, FontFamily, FontId, Id, LayerId, Margin,
+    self, Color32, CornerRadius, CursorIcon, FontFamily, FontId, Id, LayerId, Margin,
     Order, Rect, Sense, Shape, Stroke, StrokeKind, ViewportCommand, pos2, vec2,
 };
 
@@ -18,6 +18,9 @@ use crate::theme;
 
 const PAD: f32 = 10.0;
 const SCAN_STEP: f32 = 3.0;
+/// Line pitch as a multiple of the font's own row height. 1.0 is the font's
+/// idea of a line, which for a pixel face means the descenders touch.
+const LINE_LEAD: f32 = 1.22;
 const BAR_H: f32 = 24.0;
 /// Thickness of the cabinet face visible around the glass.
 const BEZEL: f32 = 22.0;
@@ -264,12 +267,22 @@ impl App {
     fn terminal(&mut self, ui: &mut egui::Ui) {
         let rect = ui.available_rect_before_wrap();
         let font = FontId::new(self.font_size, FontFamily::Monospace);
-        let (cw, rh) = ui.ctx().fonts_mut(|f| {
+        /* Cell width is half a Han glyph, not the Latin advance. A terminal cell
+        has to hold one Latin char or half a Han char, and the two fonts in the
+        chain disagree: VT323 advances 0.40 em, the CJK fallback advances 1.00 em.
+        Taking the Latin advance as the cell makes every Chinese run drift 0.25 of
+        a cell per character and the whole screen look non-monospaced. */
+        let (adv, wide, rh0) = ui.ctx().fonts_mut(|f| {
             (
                 f.glyph_width(&font, 'M').max(1.0),
+                f.glyph_width(&font, '中').max(1.0),
                 f.row_height(&font).max(1.0),
             )
         });
+        let cw = if wide > adv * 1.5 { wide / 2.0 } else { adv * 1.25 };
+        let rh = rh0 * LINE_LEAD;
+        /* stretch the Latin advance out to the cell so letters stop touching */
+        let narrow_gap = (cw - adv).max(0.0);
 
         let glass = rect.shrink(BEZEL);
         let inner = glass.shrink(PAD);
@@ -321,6 +334,9 @@ impl App {
             let mut run = String::new();
             let mut run_x = inner.left();
             let mut run_fg = theme::AMBER;
+            /* a run is either all latin or all Han: only the latin one needs the
+            gap that pushes its advance out to a full cell */
+            let mut run_wide = false;
             let mut started = false;
 
             for c in 0..cols {
@@ -355,7 +371,10 @@ impl App {
                     );
                 }
 
-                if !started || fg != run_fg {
+                let text = cell.contents();
+                let wide_char = text.chars().next().is_some_and(is_wide);
+
+                if !started || fg != run_fg || wide_char != run_wide {
                     flush(
                         &painter,
                         &mut run,
@@ -364,12 +383,14 @@ impl App {
                         rh,
                         &font,
                         run_fg.gamma_multiply(flick * 1.22),
+                        if run_wide { 0.0 } else { narrow_gap },
                     );
                     run_x = inner.left() + c as f32 * cw;
                     run_fg = fg;
+                    run_wide = wide_char;
                     started = true;
                 }
-                run.push_str(&cell.contents());
+                run.push_str(text);
             }
             flush(
                 &painter,
@@ -379,6 +400,7 @@ impl App {
                 rh,
                 &font,
                 run_fg.gamma_multiply(flick * 1.22),
+                if run_wide { 0.0 } else { narrow_gap },
             );
         }
 
@@ -529,26 +551,62 @@ fn flush(
     rh: f32,
     font: &FontId,
     color: Color32,
+    spacing: f32,
 ) {
     if run.is_empty() {
         return;
     }
     let text = run.trim_end();
     if !text.is_empty() {
-        let base = pos2(x, y + rh * 0.5);
+        let galley = painter.layout_job(job(text, font, color, spacing));
+        let top = pos2(x, y + (rh - galley.size().y) * 0.5);
         /* bloom on the cheap: one wide dim copy each side for the halo the glass
         picks up, one tight pair to thicken the stroke. Any more than this and the
         letters turn into blobs and the scanline cuts stop reading. */
         let halo = color.gamma_multiply(0.26);
         let bloom = color.gamma_multiply(0.09);
-        painter.text(base + vec2(-2.4, 0.0), Align2::LEFT_CENTER, text, font.clone(), bloom);
-        painter.text(base + vec2(2.4, 0.0), Align2::LEFT_CENTER, text, font.clone(), bloom);
-        painter.text(base + vec2(-1.0, 0.0), Align2::LEFT_CENTER, text, font.clone(), halo);
-        painter.text(base + vec2(1.0, 0.0), Align2::LEFT_CENTER, text, font.clone(), halo);
-        painter.text(base + vec2(0.0, 0.5), Align2::LEFT_CENTER, text, font.clone(), color);
-        painter.text(base, Align2::LEFT_CENTER, text, font.clone(), color);
+        painter.galley_with_override_text_color(top + vec2(-2.4, 0.0), galley.clone(), bloom);
+        painter.galley_with_override_text_color(top + vec2(2.4, 0.0), galley.clone(), bloom);
+        painter.galley_with_override_text_color(top + vec2(-1.0, 0.0), galley.clone(), halo);
+        painter.galley_with_override_text_color(top + vec2(1.0, 0.0), galley.clone(), halo);
+        painter.galley_with_override_text_color(top + vec2(0.0, 0.5), galley.clone(), color);
+        painter.galley_with_override_text_color(top, galley, color);
     }
     run.clear();
+}
+
+fn job(text: &str, font: &FontId, color: Color32, spacing: f32) -> egui::text::LayoutJob {
+    let mut job = egui::text::LayoutJob::default();
+    job.append(
+        text,
+        0.0,
+        egui::TextFormat {
+            font_id: font.clone(),
+            color,
+            extra_letter_spacing: spacing,
+            ..Default::default()
+        },
+    );
+    job
+}
+
+/// Anything that occupies two terminal cells: CJK, kana, Hangul, and the full
+/// width forms. Good enough — this is the same test wcwidth does.
+fn is_wide(c: char) -> bool {
+    matches!(c as u32,
+        0x1100..=0x115F
+        | 0x2E80..=0x303E
+        | 0x3041..=0x33FF
+        | 0x3400..=0x4DBF
+        | 0x4E00..=0x9FFF
+        | 0xA000..=0xA4CF
+        | 0xAC00..=0xD7A3
+        | 0xF900..=0xFAFF
+        | 0xFE30..=0xFE6F
+        | 0xFF00..=0xFF60
+        | 0xFFE0..=0xFFE6
+        | 0x1F300..=0x1F9FF
+        | 0x20000..=0x3FFFD)
 }
 
 const DEMO: &str = "\
@@ -859,5 +917,24 @@ impl eframe::App for App {
         self.grab(&ctx);
 
         ctx.request_repaint_after(Duration::from_millis(16));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_wide;
+
+    #[test]
+    fn han_and_kana_take_two_cells() {
+        for c in ['中', '文', 'あ', 'ア', '한', 'Ａ', '：'] {
+            assert!(is_wide(c), "{c} should be double width");
+        }
+    }
+
+    #[test]
+    fn latin_and_box_drawing_take_one() {
+        for c in ['a', 'Z', '0', ' ', '─', '│', '→', '—', '\u{2500}'] {
+            assert!(!is_wide(c), "{c:?} should be single width");
+        }
     }
 }
