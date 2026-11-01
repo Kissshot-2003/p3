@@ -55,14 +55,17 @@ impl App {
         let spec = ShellSpec::detect();
 
         let mut term = Term::new(45, 130);
-        if std::env::var("P3_SHOT").is_ok() {
-            /* only for screenshots: a fixed screen beats a lone prompt */
+        /* Screenshot mode drives the screen from `DEMO` alone and never spawns a
+        shell: a live prompt drags the real cwd into the picture, and it makes the
+        frame depend on whatever the machine happened to print. */
+        let (pty, status) = if std::env::var("P3_SHOT").is_ok() {
             term.process(DEMO.as_bytes());
-        }
-
-        let (pty, status) = match PtySession::spawn(&cc.egui_ctx, spec, 45, 130, &cwd) {
-            Ok(p) => (Some(p), String::new()),
-            Err(e) => (None, e),
+            (None, String::new())
+        } else {
+            match PtySession::spawn(&cc.egui_ctx, spec, 45, 130, &cwd) {
+                Ok(p) => (Some(p), String::new()),
+                Err(e) => (None, e),
+            }
         };
 
         Self {
@@ -371,7 +374,13 @@ impl App {
                     );
                 }
 
-                let text = cell.contents();
+                /* vt100 stores a blank cell as zero bytes, so `contents()` gives
+                "". Dropping it silently shortens the run by one cell, and every
+                character after an ASCII space inside a latin run slides left by a
+                column — `组价 2026` came out as `组价2026`. A blank cell is still a
+                cell: it contributes one space to the run. */
+                let raw = cell.contents();
+                let text = if raw.is_empty() { " " } else { raw };
                 let wide_char = text.chars().next().is_some_and(is_wide);
 
                 if !started || fg != run_fg || wide_char != run_wide {
@@ -625,6 +634,12 @@ const DEMO: &str = "\
   inverse \x1b[7m selected block \x1b[0m   underline \x1b[4munderlined\x1b[0m\r\n\
 \r\n\
   中文输出：寿县项目 工程量清单 组价 2026-11-02\r\n\
+\r\n\
+  net   1042 up      0 down     12.4 ms\r\n\
+  mem   3184 / 16384 MB         cpu  07 %\r\n\
+  disk  C:  412 GB free of 1024 GB\r\n\
+\r\n\
+  flashing firmware  [##########----------]  52%\r\n\
 \r\n";
 
 /// 32-bit BMP: no encoder dependency, and every image viewer reads it.

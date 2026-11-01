@@ -2,6 +2,13 @@
 name = "p3"
 version = "0.1.0"
 edition = "2024"
+rust-version = "1.85"
+description = "An amber phosphor CRT terminal — native Rust, egui on top of a real PTY"
+license = "MIT"
+readme = "README.md"
+repository = "https://github.com/Kissshot-2003/p3"
+keywords = ["terminal", "crt", "egui", "pty", "retro"]
+categories = ["command-line-utilities", "gui"]
 
 [dependencies]
 eframe = "0.37.0"
