@@ -1,0 +1,82 @@
+# AMBER TERMINAL (Rust GUI)
+
+RADIOSOL 那种琥珀单色 CRT 终端，**原生 Rust 桌面应用**。
+
+```bash
+cargo run --release
+```
+
+产物：`target/release/amber-gui.exe`（单文件，无需运行时）。
+
+## 为什么是原生而不是网页
+
+网页版（`../amber-terminal`）只能拿到 shell 的管道输出，行编辑、预测、补全全得自己手搓，还得开个本地服务。
+原生版直接开一个**真 PTY**（Windows 用 ConPTY），按键直通 shell —— PowerShell 的 PSReadLine 原样工作：
+
+- 内联历史预测（灰字），`→` / `End` 接受
+- 语法高亮、多行编辑、点击定位
+- `Tab` 菜单补全，含每个参数的签名
+
+终端模拟器该做的事这里只做最小集，剩下的交给 shell 自己。
+
+## 架构
+
+```
+src/main.rs    窗口与 eframe 启动
+src/app.rs     布局 + 网格渲染（每帧把 vt100 网格合并成色块 run）
+src/pty.rs     portable-pty 会话：ConPTY / openpty，读写线程，resize
+src/term.rs    vt100 解析器包装 + 设备查询应答
+src/input.rs   egui 按键 → xterm 字节序列
+src/theme.rs   琥珀色板、ANSI 折叠、字体
+```
+
+- **PTY**：`portable-pty`（wezterm 那套），Windows 走 ConPTY
+- **VT 解析**：`vt100`，8000 行回滚
+- **渲染**：`egui`/wgpu 自绘网格，相邻同色 cell 合并成一个 glyph run
+- **单色**：所有 ANSI 色（含 24 位真彩）按亮度折回一条琥珀色阶
+
+### 一个坑
+
+PSReadLine 启动时会发 `ESC[6n`（查询光标位置）并**阻塞等待回复**。不回就是一片空白、看起来像卡死。`term.rs::respond` 负责应答 CPR / DA / DSR。
+
+## 快捷键
+
+| 键 | 作用 |
+|---|---|
+| `Tab` | shell 补全 / 接受预测 |
+| `→` `End` | 接受内联预测 |
+| `Ctrl+R` | 历史反查 |
+| `Ctrl+C` | 中断（发 SIGINT，不是复制） |
+| `PgUp` / `PgDn` | 翻看回滚缓冲 |
+| `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | 字号 / 复位 |
+| `F5` | 重开会话 |
+| `SCAN` / `RAIL` | 扫描线 / 侧栏开关 |
+
+复制粘贴：`Ctrl+Shift+C` / `Ctrl+Shift+V`（待接）。
+
+## 环境变量
+
+| 变量 | 作用 |
+|---|---|
+| `AMBER_SHELL` | 覆盖要启动的 shell 可执行文件 |
+| `AMBER_DUMP` | 每 0.5 秒把当前屏幕写到该路径（排障用） |
+
+`AMBER_DUMP` 的产物长这样，用来确认 PTY/VT 链路而不必看屏幕：
+
+```
+# grid 110x40  cell 8.25x17.56  rect 932x729  inner 908x705
+# cursor (0, 59)  hidden false  scroll 0  exited false  rx 602  pid Some(11040)
+PS C:\...> 
+```
+
+## 已知限制
+
+- 中文字符宽度靠字体天然等宽近似，复杂混排可能有一格偏移
+- 没有文本选择/复制，没有超链接点击（下一步）
+- 侧栏目前只有会话信息，Git 状态在计划内
+- `Shift+方向键` 选区、鼠标报告未实现
+
+## 与网页版的关系
+
+`../amber-terminal` 保留为原型验证（Node + SSE + xterm.js），功能更全但受浏览器限制。
+本目录是主线实现。
