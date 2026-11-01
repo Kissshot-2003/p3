@@ -22,14 +22,15 @@ cargo run --release
 ## 架构
 
 ```
-src/main.rs    窗口与 eframe 启动
-src/app.rs     布局 + 网格渲染（每帧把 vt100 网格合并成色块 run）
+src/main.rs    窗口与 eframe 启动（无系统标题栏）
+src/app.rs     自绘标题栏 + 布局 + 网格渲染（每帧把 vt100 网格合并成色块 run）
 src/pty.rs     portable-pty 会话：ConPTY / openpty，读写线程，resize
 src/term.rs    vt100 解析器包装 + 设备查询应答
 src/input.rs   egui 按键 → xterm 字节序列
 src/theme.rs   琥珀色板、ANSI 折叠、字体
 ```
 
+- **窗口**：`with_decorations(false)`，标题栏自己画。系统那圈白底会把整块暗屏衬得像贴纸
 - **PTY**：`portable-pty`（wezterm 那套），Windows 走 ConPTY
 - **VT 解析**：`vt100`，8000 行回滚
 - **渲染**：`egui`/wgpu 自绘网格，相邻同色 cell 合并成一个 glyph run
@@ -51,6 +52,19 @@ PSReadLine 启动时会发 `ESC[6n`（查询光标位置）并**阻塞等待回�
 | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | 字号 / 复位 |
 | `F5` | 重开会话 |
 | `SCAN` / `RAIL` | 扫描线 / 侧栏开关 |
+
+## 窗口
+
+系统标题栏被去掉了，这几件事由应用自己接管：
+
+| 操作 | 效果 |
+|---|---|
+| 拖标题栏空白处 | 移动窗口 |
+| 双击标题栏 | 最大化 / 还原 |
+| 窗口四边、四角 7 px 内拖动 | 缩放（光标会变） |
+| 右上角线绘按钮 | 最小化 / 最大化 / 关闭 |
+
+去掉系统装饰的代价是 Windows 的 Aero Snap（拖到屏幕顶部最大化）不再触发，用双击标题栏代替。
 
 复制粘贴：`Ctrl+Shift+C` / `Ctrl+Shift+V`（待接）。
 

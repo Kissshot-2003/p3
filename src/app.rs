@@ -7,7 +7,8 @@
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
-    self, Align2, Color32, CornerRadius, FontFamily, FontId, Margin, Rect, Shape, Stroke, pos2, vec2,
+    self, Align2, Color32, CornerRadius, CursorIcon, FontFamily, FontId, Id, LayerId, Margin,
+    Order, Rect, Sense, Shape, Stroke, StrokeKind, ViewportCommand, pos2, vec2,
 };
 
 use crate::input;
@@ -18,6 +19,8 @@ use crate::theme;
 const PAD: f32 = 12.0;
 const SCAN_STEP: f32 = 3.0;
 const RAIL_W: f32 = 248.0;
+/// Thickness of the invisible resize border along the window edge.
+const EDGE_HIT: f32 = 7.0;
 
 pub struct App {
     term: Term,
@@ -118,13 +121,26 @@ impl App {
     /* ------------------------------------------------------------------ hud */
 
     fn hud(&mut self, ui: &mut egui::Ui) {
+        let ctx = ui.ctx().clone();
+        let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
+        let mut hit: Option<WBtn> = None;
+
         egui::Panel::top("hud")
             .frame(
                 egui::Frame::NONE
-                    .fill(theme::BG)
-                    .inner_margin(Margin::symmetric(12, 5)),
+                    .fill(theme::BG_DEEP)
+                    .stroke(Stroke::new(1.0, theme::AMBER_DEEP))
+                    .inner_margin(Margin::symmetric(10, 5)),
             )
             .show(ui, |ui| {
+                /* drag zone first, so the title buttons added below stay on top
+                of it in the hit-test order */
+                let bar = Rect::from_min_size(
+                    ui.cursor().min,
+                    vec2(ui.available_width(), 18.0),
+                );
+                let drag = ui.interact(bar, Id::unique("amber.titlebar"), Sense::click_and_drag());
+
                 ui.horizontal(|ui| {
                     ui.spacing_mut().item_spacing.x = 8.0;
                     ui.label(
@@ -140,6 +156,10 @@ impl App {
                     );
 
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                        if let Some(b) = window_buttons(ui, maximized) {
+                            hit = Some(b);
+                        }
+                        ui.add_space(4.0);
                         let up = self.started.elapsed().as_secs();
                         ui.label(
                             egui::RichText::new(format!("{:02}:{:02}", up / 60, up % 60))
@@ -178,8 +198,91 @@ impl App {
                         );
                     });
                 });
+
+                if drag.drag_started() {
+                    /* the outermost pixels belong to the resize border; dragging
+                    there would fight the resize the same click already started */
+                    let near_edge = ctx.pointer_latest_pos().is_some_and(|p| {
+                        let vp = ctx.viewport_rect();
+                        p.x - vp.left() < EDGE_HIT
+                            || vp.right() - p.x < EDGE_HIT
+                            || p.y - vp.top() < EDGE_HIT
+                    });
+                    if !near_edge {
+                        ctx.send_viewport_cmd(ViewportCommand::StartDrag);
+                    }
+                }
+                if drag.double_clicked() {
+                    ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized));
+                }
             });
+
+        match hit {
+            Some(WBtn::Min) => ctx.send_viewport_cmd(ViewportCommand::Minimized(true)),
+            Some(WBtn::Max) => ctx.send_viewport_cmd(ViewportCommand::Maximized(!maximized)),
+            Some(WBtn::Close) => ctx.send_viewport_cmd(ViewportCommand::Close),
+            None => {}
+        }
     }
+
+    /* ----------------------------------------------------------- window chrome */
+
+    /// The OS title bar is gone, so the resize borders have to be rebuilt by
+    /// hand: a thin hot zone along each edge that starts an OS-level resize.
+    fn resize_edges(ctx: &egui::Context) {
+        if ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
+            return;
+        }
+        let rect = ctx.viewport_rect();
+        let Some(p) = ctx.pointer_latest_pos() else { return };
+        if !rect.contains(p) {
+            return;
+        }
+        let w = p.x - rect.left() < EDGE_HIT;
+        let e = rect.right() - p.x < EDGE_HIT;
+        let n = p.y - rect.top() < EDGE_HIT;
+        let s = rect.bottom() - p.y < EDGE_HIT;
+        if !(w || e || n || s) {
+            return;
+        }
+
+        let (dir, cursor) = match (n, s, w, e) {
+            (true, _, true, _) => (egui::ResizeDirection::NorthWest, CursorIcon::ResizeNwSe),
+            (true, _, _, true) => (egui::ResizeDirection::NorthEast, CursorIcon::ResizeNeSw),
+            (_, true, true, _) => (egui::ResizeDirection::SouthWest, CursorIcon::ResizeNeSw),
+            (_, true, _, true) => (egui::ResizeDirection::SouthEast, CursorIcon::ResizeNwSe),
+            (true, _, _, _) => (egui::ResizeDirection::North, CursorIcon::ResizeVertical),
+            (_, true, _, _) => (egui::ResizeDirection::South, CursorIcon::ResizeVertical),
+            (_, _, true, _) => (egui::ResizeDirection::West, CursorIcon::ResizeHorizontal),
+            (_, _, _, true) => (egui::ResizeDirection::East, CursorIcon::ResizeHorizontal),
+            _ => return,
+        };
+        ctx.set_cursor_icon(cursor);
+        if ctx.input(|i| i.pointer.primary_pressed()) {
+            ctx.send_viewport_cmd(ViewportCommand::BeginResize(dir));
+        }
+    }
+
+    /// Draws the tube surround: one dim amber hairline against the black, plus a
+    /// blackout ring just inside it, so the window reads as a bezel instead of a
+    /// rectangle floating on the desktop.
+    fn chrome(ctx: &egui::Context) {
+        let rect = ctx.viewport_rect();
+        let p = ctx.layer_painter(LayerId::new(Order::Foreground, Id::unique("amber.chrome")));
+        p.rect_stroke(
+            rect.shrink(0.5),
+            CornerRadius::ZERO,
+            Stroke::new(1.0, theme::AMBER_DEEP),
+            StrokeKind::Inside,
+        );
+        p.rect_stroke(
+            rect.shrink(1.5),
+            CornerRadius::ZERO,
+            Stroke::new(1.0, Color32::from_black_alpha(170)),
+            StrokeKind::Inside,
+        );
+    }
+
 
     /* ----------------------------------------------------------------- rail */
 
@@ -421,6 +524,84 @@ fn flush(
     run.clear();
 }
 
+#[derive(Clone, Copy)]
+enum WBtn {
+    Min,
+    Max,
+    Close,
+}
+
+#[derive(Clone, Copy)]
+enum Glyph {
+    Min,
+    Max,
+    Restore,
+    Close,
+}
+
+/// Minimise / maximise / close, drawn as line art instead of font glyphs — the
+/// box-drawing characters that would spell these are a coin flip on whether the
+/// mono font actually ships them.
+fn window_buttons(ui: &mut egui::Ui, maximized: bool) -> Option<WBtn> {
+    let mut hit = None;
+    /* right-to-left layout: list them in reverse so close sits at the corner */
+    let specs = [
+        (WBtn::Close, Glyph::Close),
+        (WBtn::Max, if maximized { Glyph::Restore } else { Glyph::Max }),
+        (WBtn::Min, Glyph::Min),
+    ];
+    for (btn, glyph) in specs {
+        let (rect, resp) = ui.allocate_exact_size(vec2(26.0, 18.0), Sense::click());
+        let close = matches!(btn, WBtn::Close);
+        if resp.hovered() {
+            ui.painter().rect_filled(
+                rect.shrink(1.0),
+                CornerRadius::ZERO,
+                if close { theme::AMBER } else { theme::AMBER_DEEP },
+            );
+        }
+        let col = match (resp.hovered(), close) {
+            (true, true) => theme::BG_DEEP,
+            (true, false) => theme::AMBER_HOT,
+            _ => theme::AMBER_DIM,
+        };
+        draw_glyph(ui.painter(), rect, glyph, col);
+        if resp.clicked() {
+            hit = Some(btn);
+        }
+    }
+    hit
+}
+
+fn draw_glyph(p: &egui::Painter, rect: Rect, g: Glyph, col: Color32) {
+    let c = rect.center();
+    let st = Stroke::new(1.1, col);
+    let s = 5.0;
+    match g {
+        Glyph::Min => {
+            p.line_segment([pos2(c.x - s, c.y + 3.5), pos2(c.x + s, c.y + 3.5)], st);
+        }
+        Glyph::Max => {
+            p.rect_stroke(
+                Rect::from_center_size(c, vec2(s * 2.0, s * 1.6)),
+                CornerRadius::ZERO,
+                st,
+                StrokeKind::Inside,
+            );
+        }
+        Glyph::Restore => {
+            let back = Rect::from_center_size(c - vec2(1.2, 1.2), vec2(s * 1.6, s * 1.2));
+            let front = Rect::from_center_size(c + vec2(1.2, 1.2), vec2(s * 1.6, s * 1.2));
+            p.rect_stroke(back, CornerRadius::ZERO, st, StrokeKind::Inside);
+            p.rect_stroke(front, CornerRadius::ZERO, st, StrokeKind::Inside);
+        }
+        Glyph::Close => {
+            p.line_segment([pos2(c.x - s, c.y - s), pos2(c.x + s, c.y + s)], st);
+            p.line_segment([pos2(c.x + s, c.y - s), pos2(c.x - s, c.y + s)], st);
+        }
+    }
+}
+
 fn section(ui: &mut egui::Ui, title: &str) {
     ui.add_space(4.0);
     ui.label(
@@ -481,6 +662,8 @@ impl eframe::App for App {
             self.respawn(&ctx);
         }
 
+        Self::resize_edges(&ctx);
+
         self.hud(ui);
         if self.rail_open {
             self.rail(ui);
@@ -488,6 +671,8 @@ impl eframe::App for App {
         egui::CentralPanel::no_frame()
             .frame(egui::Frame::NONE.fill(theme::BG))
             .show(ui, |ui| self.terminal(ui));
+
+        Self::chrome(&ctx);
 
         ctx.request_repaint_after(Duration::from_millis(16));
     }
