@@ -1,0 +1,8 @@
+* text=auto eol=lf
+
+# 批处理脚本必须是 CRLF，否则 cmd 会把行尾的 ^ 和 goto 标签读错
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+*.ttf binary
+*.png binary
