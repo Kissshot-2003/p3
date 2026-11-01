@@ -21,8 +21,6 @@ const SCAN_STEP: f32 = 3.0;
 const BAR_H: f32 = 24.0;
 /// Thickness of the cabinet face visible around the glass.
 const BEZEL: f32 = 22.0;
-/// The tube face is not a rectangle: this is the round-over at each corner.
-const GLASS_R: u8 = 18;
 /// Thickness of the invisible resize border along the window edge.
 const EDGE_HIT: f32 = 7.0;
 
@@ -136,6 +134,8 @@ impl App {
                     .fill(theme::CABINET_TOP)
                     .inner_margin(Margin { left: 6, right: 6, top: 3, bottom: 3 }),
             )
+            /* no hairline under the plate: the cabinet is one piece of plastic */
+            .show_separator_line(false)
             .show(ui, |ui| {
                 let bar = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), BAR_H - 6.0));
                 let drag = ui.interact(bar, Id::unique("amber.titlebar"), Sense::click_and_drag());
@@ -295,8 +295,7 @@ impl App {
 
         let painter = ui.painter_at(rect);
         cabinet(&painter, rect, glass, t);
-        let face = CornerRadius::same(if open < 1.0 { 0 } else { GLASS_R });
-        painter.rect_filled(vis, face, theme::SCREEN);
+        painter.rect_filled(vis, CornerRadius::ZERO, theme::SCREEN);
         haze(&painter, vis);
 
         let screen = self.term.screen();
@@ -633,17 +632,16 @@ fn cabinet(p: &egui::Painter, outer: Rect, glass: Rect, t: f32) {
         ],
     );
 
-    let r = CornerRadius::same(GLASS_R + 4);
     /* the gap between plastic and glass is in shadow, always */
     p.rect_stroke(
         glass.expand(4.0),
-        r,
+        CornerRadius::ZERO,
         Stroke::new(6.0, Color32::from_black_alpha(238)),
         StrokeKind::Middle,
     );
     p.rect_stroke(
         glass.expand(7.5),
-        CornerRadius::same(GLASS_R + 8),
+        CornerRadius::ZERO,
         Stroke::new(1.0, Color32::from_rgba_unmultiplied(0xff, 0xc8, 0x78, 26)),
         StrokeKind::Middle,
     );
@@ -671,13 +669,13 @@ fn haze(p: &egui::Painter, vis: Rect) {
 fn glass_rim(p: &egui::Painter, glass: Rect) {
     p.rect_stroke(
         glass.shrink(0.5),
-        CornerRadius::same(GLASS_R),
+        CornerRadius::ZERO,
         Stroke::new(1.0, Color32::from_rgba_unmultiplied(0xff, 0xd2, 0x8a, 40)),
         StrokeKind::Inside,
     );
     p.rect_stroke(
         glass.shrink(3.5),
-        CornerRadius::same(GLASS_R.saturating_sub(3)),
+        CornerRadius::ZERO,
         Stroke::new(2.0, Color32::from_rgba_unmultiplied(0xff, 0xb0, 0x00, 14)),
         StrokeKind::Inside,
     );
@@ -739,9 +737,10 @@ enum Glyph {
     Close,
 }
 
-/// Minimise / maximise / close, drawn as line art instead of font glyphs — the
-/// box-drawing characters that would spell these are a coin flip on whether the
-/// mono font actually ships them.
+/// The three keys on the plate. They are drawn as stamped metal keys rather
+/// than modern flat icons: a dark face, a chiselled bevel that catches light on
+/// the top-left and shadows the bottom-right, and a blocky glyph. Pressing one
+/// lights the face like a backlit membrane key.
 fn window_buttons(ui: &mut egui::Ui, maximized: bool) -> Option<WBtn> {
     let mut hit = None;
     /* right-to-left layout: list them in reverse so close sits at the corner */
@@ -751,21 +750,33 @@ fn window_buttons(ui: &mut egui::Ui, maximized: bool) -> Option<WBtn> {
         (WBtn::Min, Glyph::Min),
     ];
     for (btn, glyph) in specs {
-        let (rect, resp) = ui.allocate_exact_size(vec2(26.0, 18.0), Sense::click());
+        let (rect, resp) = ui.allocate_exact_size(vec2(28.0, 18.0), Sense::click());
+        let key = rect.shrink(1.5);
+        let hot = resp.hovered();
         let close = matches!(btn, WBtn::Close);
-        if resp.hovered() {
-            ui.painter().rect_filled(
-                rect.shrink(1.0),
-                CornerRadius::ZERO,
-                if close { theme::AMBER } else { theme::AMBER_DEEP },
-            );
-        }
-        let col = match (resp.hovered(), close) {
-            (true, true) => theme::BG_DEEP,
-            (true, false) => theme::AMBER_HOT,
-            _ => theme::AMBER_FAINT,
+        let p = ui.painter();
+
+        /* the key sits in its own hole in the plate */
+        p.rect_filled(key, CornerRadius::ZERO, if hot { theme::AMBER_DIM } else { theme::BG_DEEP });
+
+        /* bevel: light on the top-left, shadow on the bottom-right */
+        let lit = if hot { theme::AMBER_HOT } else { theme::AMBER_FAINT };
+        let st = Stroke::new(1.0, lit);
+        p.line_segment([key.left_top(), key.right_top()], st);
+        p.line_segment([key.left_top(), key.left_bottom()], st);
+        let sh = Stroke::new(1.0, Color32::from_black_alpha(215));
+        p.line_segment([key.left_bottom(), key.right_bottom()], sh);
+        p.line_segment([key.right_top(), key.right_bottom()], sh);
+
+        /* dark surround so the key reads as a separate part */
+        p.rect_stroke(rect, CornerRadius::ZERO, Stroke::new(1.0, Color32::from_black_alpha(120)), StrokeKind::Outside);
+
+        let col = match (hot, close) {
+            (true, _) => theme::BG_DEEP,
+            (false, true) => theme::AMBER,
+            (false, false) => theme::AMBER_DIM,
         };
-        draw_glyph(ui.painter(), rect, glyph, col);
+        draw_glyph(p, key, glyph, col);
         if resp.clicked() {
             hit = Some(btn);
         }
@@ -773,27 +784,33 @@ fn window_buttons(ui: &mut egui::Ui, maximized: bool) -> Option<WBtn> {
     hit
 }
 
+/// Chunky, pixel-flavoured marks — thin vectors look like a web app, not a
+/// machine that was made in 1983.
 fn draw_glyph(p: &egui::Painter, rect: Rect, g: Glyph, col: Color32) {
     let c = rect.center();
-    let st = Stroke::new(1.1, col);
-    let s = 5.0;
+    let st = Stroke::new(1.8, col);
+    let s = 4.6;
     match g {
         Glyph::Min => {
-            p.line_segment([pos2(c.x - s, c.y + 3.5), pos2(c.x + s, c.y + 3.5)], st);
+            p.rect_filled(
+                Rect::from_center_size(pos2(c.x, c.y + 2.4), vec2(s * 2.0, 2.4)),
+                CornerRadius::ZERO,
+                col,
+            );
         }
         Glyph::Max => {
             p.rect_stroke(
-                Rect::from_center_size(c, vec2(s * 2.0, s * 1.6)),
+                Rect::from_center_size(c, vec2(s * 2.0, s * 1.7)),
                 CornerRadius::ZERO,
                 st,
                 StrokeKind::Inside,
             );
         }
         Glyph::Restore => {
-            let back = Rect::from_center_size(c - vec2(1.2, 1.2), vec2(s * 1.6, s * 1.2));
-            let front = Rect::from_center_size(c + vec2(1.2, 1.2), vec2(s * 1.6, s * 1.2));
-            p.rect_stroke(back, CornerRadius::ZERO, st, StrokeKind::Inside);
-            p.rect_stroke(front, CornerRadius::ZERO, st, StrokeKind::Inside);
+            let back = Rect::from_center_size(c - vec2(1.4, 1.4), vec2(s * 1.7, s * 1.4));
+            let front = Rect::from_center_size(c + vec2(1.4, 1.4), vec2(s * 1.7, s * 1.4));
+            p.rect_stroke(back, CornerRadius::ZERO, Stroke::new(1.6, col), StrokeKind::Inside);
+            p.rect_stroke(front, CornerRadius::ZERO, Stroke::new(1.6, col), StrokeKind::Inside);
         }
         Glyph::Close => {
             p.line_segment([pos2(c.x - s, c.y - s), pos2(c.x + s, c.y + s)], st);
