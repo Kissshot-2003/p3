@@ -40,6 +40,10 @@ pub struct App {
     last_chunk: Vec<u8>,
     shot: Option<String>,
     shot_fired: bool,
+    /// Anchor and head of the text selection, in (row, col) screen cells. The
+    /// anchor is where the drag started, the head follows the pointer, so a
+    /// selection can run backwards. Only screen cells, not scrollback.
+    sel: Option<((u16, u16), (u16, u16))>,
 }
 
 impl App {
@@ -81,6 +85,7 @@ impl App {
             last_chunk: Vec::new(),
             shot: std::env::var("P3_SHOT").ok(),
             shot_fired: false,
+            sel: None,
         }
     }
 
@@ -125,6 +130,18 @@ impl App {
             }
             Err(e) => self.status = e,
         }
+    }
+
+    /// Ctrl+Shift+C. Returns whether anything actually went to the clipboard, so
+    /// the caller can drop the marks and give the screen back.
+    fn copy_selection(&self, ctx: &egui::Context) -> bool {
+        let Some((a, b)) = self.sel else { return false };
+        let text = selection_text(self.term.screen(), a, b);
+        if text.is_empty() {
+            return false;
+        }
+        ctx.copy_text(text);
+        true
     }
 
     /* ------------------------------------------------------------------ hud */
@@ -297,7 +314,36 @@ impl App {
             if let Some(p) = self.pty.as_mut() {
                 p.resize(rows, cols);
             }
+            self.sel = None;
         }
+
+        /* The shell owns the cursor, so the mouse does one job only: marking
+        text. No click-to-position — that would need the terminal to feed the
+        shell arrow-key traffic and it fights PSReadLine's own redraw. */
+        let cols = self.term.cols;
+        let rows = self.term.rows;
+        let resp = ui.interact(inner, Id::unique("p3.screen"), Sense::click_and_drag());
+        let cell_at = |p: egui::Pos2| -> (u16, u16) {
+            let r = ((p.y - inner.top()) / rh).floor();
+            let c = ((p.x - inner.left()) / cw).floor();
+            (
+                r.clamp(0.0, rows.saturating_sub(1) as f32) as u16,
+                c.clamp(0.0, cols.saturating_sub(1) as f32) as u16,
+            )
+        };
+        if resp.drag_started() {
+            if let Some(p) = resp.interact_pointer_pos() {
+                let cell = cell_at(p);
+                self.sel = Some((cell, cell));
+            }
+        } else if resp.dragged() {
+            if let (Some(p), Some((anchor, _))) = (resp.interact_pointer_pos(), self.sel) {
+                self.sel = Some((anchor, cell_at(p)));
+            }
+        } else if resp.clicked() {
+            self.sel = None;
+        }
+        let sel = self.sel;
 
         /* boot: the picture opens from a horizontal line, like the tube warming */
         let t = self.started.elapsed().as_secs_f32();
@@ -363,6 +409,13 @@ impl App {
                     fg = fg.gamma_multiply(1.15);
                 }
 
+                /* marked cells go amber-on-dark: the phosphor inverts, which is
+                what a tube does when the beam is held, and it stays readable */
+                if in_selection(sel, r, c) {
+                    fg = theme::SCREEN;
+                    bg = Some(theme::AMBER);
+                }
+
                 if let Some(b) = bg {
                     painter.rect_filled(
                         Rect::from_min_size(
@@ -388,11 +441,9 @@ impl App {
                         &painter,
                         &mut run,
                         run_x + dx,
-                        y,
-                        rh,
-                        &font,
+                        Row { y, h: rh },
+                        Style { font: &font, spacing: if run_wide { 0.0 } else { narrow_gap } },
                         run_fg.gamma_multiply(flick * 1.22),
-                        if run_wide { 0.0 } else { narrow_gap },
                     );
                     run_x = inner.left() + c as f32 * cw;
                     run_fg = fg;
@@ -405,11 +456,9 @@ impl App {
                 &painter,
                 &mut run,
                 run_x + dx,
-                y,
-                rh,
-                &font,
+                Row { y, h: rh },
+                Style { font: &font, spacing: if run_wide { 0.0 } else { narrow_gap } },
                 run_fg.gamma_multiply(flick * 1.22),
-                if run_wide { 0.0 } else { narrow_gap },
             );
         }
 
@@ -552,23 +601,37 @@ impl App {
     }
 }
 
+/// One screen row: where it starts and how tall it is. Bundled because they
+/// always travel together and a bare pair of floats reads as neither.
+#[derive(Clone, Copy)]
+struct Row {
+    y: f32,
+    h: f32,
+}
+
+/// What a run of glyphs needs besides its position: the face, and the letter gap
+/// that stretches the Latin advance out to a full cell.
+#[derive(Clone, Copy)]
+struct Style<'a> {
+    font: &'a FontId,
+    spacing: f32,
+}
+
 fn flush(
     painter: &egui::Painter,
     run: &mut String,
     x: f32,
-    y: f32,
-    rh: f32,
-    font: &FontId,
+    row: Row,
+    style: Style<'_>,
     color: Color32,
-    spacing: f32,
 ) {
     if run.is_empty() {
         return;
     }
     let text = run.trim_end();
     if !text.is_empty() {
-        let galley = painter.layout_job(job(text, font, color, spacing));
-        let top = pos2(x, y + (rh - galley.size().y) * 0.5);
+        let galley = painter.layout_job(job(text, style.font, color, style.spacing));
+        let top = pos2(x, row.y + (row.h - galley.size().y) * 0.5);
         /* bloom on the cheap: one wide dim copy each side for the halo the glass
         picks up, one tight pair to thicken the stroke. Any more than this and the
         letters turn into blobs and the scanline cuts stop reading. */
@@ -597,6 +660,42 @@ fn job(text: &str, font: &FontId, color: Color32, spacing: f32) -> egui::text::L
         },
     );
     job
+}
+
+/// Is this cell inside the marked range? The range is a single run of cells, so
+/// ordering both ends as (row, col) makes the middle rows fall out for free:
+/// everything between the anchor row and the head row is included in full.
+fn in_selection(sel: Option<((u16, u16), (u16, u16))>, r: u16, c: u16) -> bool {
+    let Some((a, b)) = sel else { return false };
+    let (start, end) = if a <= b { (a, b) } else { (b, a) };
+    (r, c) >= start && (r, c) <= end
+}
+
+/// Pull the marked cells out of the grid as plain text, the way a terminal's
+/// "copy" does: one line per row, trailing blanks dropped, no wrap markers.
+fn selection_text(screen: &vt100::Screen, a: (u16, u16), b: (u16, u16)) -> String {
+    let (start, end) = if a <= b { (a, b) } else { (b, a) };
+    let last_col = screen.size().1.get().saturating_sub(1);
+    let mut out = String::new();
+    for r in start.0..=end.0 {
+        let c0 = if r == start.0 { start.1 } else { 0 };
+        let c1 = if r == end.0 { end.1 } else { last_col };
+        let mut line = String::new();
+        for c in c0..=c1 {
+            let Some(cell) = screen.cell(r, c) else { continue };
+            /* the second half of a Han glyph carries no text of its own */
+            if cell.is_wide_continuation() {
+                continue;
+            }
+            let text = cell.contents();
+            line.push_str(if text.is_empty() { " " } else { text });
+        }
+        out.push_str(line.trim_end());
+        if r != end.0 {
+            out.push('\n');
+        }
+    }
+    out
 }
 
 /// Anything that occupies two terminal cells: CJK, kana, Hangul, and the full
@@ -672,9 +771,7 @@ fn write_bmp(path: &str, img: &egui::ColorImage) {
             out.push(p.r());
             out.push(255);
         }
-        for _ in 0..pad {
-            out.push(0);
-        }
+        out.extend(std::iter::repeat_n(0u8, pad));
     }
     let tmp = format!("{path}.tmp");
     if std::fs::write(&tmp, out).is_ok() {
@@ -899,14 +996,20 @@ impl eframe::App for App {
         self.pump_pty();
 
         let pump = input::pump(&ctx);
+        let before = self.font_size;
         match pump.zoom {
             1 => self.font_size = (self.font_size + 2.0).min(32.0),
             -1 => self.font_size = (self.font_size - 2.0).max(10.0),
             9 => self.font_size = 16.0,
             _ => {}
         }
+        if self.font_size != before {
+            self.sel = None;
+        }
         if pump.scroll != 0 {
             self.term.scroll(pump.scroll * 3);
+            /* the marks belong to the rows that were on screen a moment ago */
+            self.sel = None;
         }
         if !pump.bytes.is_empty() {
             self.term.scroll_to_bottom();
@@ -919,6 +1022,10 @@ impl eframe::App for App {
         }
         if pump.respawn {
             self.respawn(&ctx);
+            self.sel = None;
+        }
+        if pump.copy && self.copy_selection(&ctx) {
+            self.sel = None;
         }
 
         Self::resize_edges(&ctx);
@@ -937,7 +1044,8 @@ impl eframe::App for App {
 
 #[cfg(test)]
 mod tests {
-    use super::is_wide;
+    use super::{in_selection, is_wide, selection_text};
+    use crate::term::Term;
 
     #[test]
     fn han_and_kana_take_two_cells() {
@@ -951,5 +1059,44 @@ mod tests {
         for c in ['a', 'Z', '0', ' ', '─', '│', '→', '—', '\u{2500}'] {
             assert!(!is_wide(c), "{c:?} should be single width");
         }
+    }
+
+    #[test]
+    fn selection_covers_whole_rows_between_the_ends() {
+        let sel = Some(((1, 4), (3, 2)));
+        assert!(!in_selection(sel, 0, 9));
+        assert!(!in_selection(sel, 1, 3));
+        assert!(in_selection(sel, 1, 4));
+        assert!(in_selection(sel, 2, 0), "middle rows are included in full");
+        assert!(in_selection(sel, 2, 999));
+        assert!(in_selection(sel, 3, 2));
+        assert!(!in_selection(sel, 3, 3));
+        assert!(!in_selection(None, 2, 0));
+    }
+
+    #[test]
+    fn dragging_backwards_selects_the_same_text() {
+        let mut t = Term::new(4, 20);
+        t.process(b"one\r\ntwo\r\nthree");
+        let forward = selection_text(t.screen(), (0, 0), (2, 4));
+        let backward = selection_text(t.screen(), (2, 4), (0, 0));
+        assert_eq!(forward, "one\ntwo\nthree");
+        assert_eq!(forward, backward);
+    }
+
+    #[test]
+    fn copy_drops_trailing_blanks_and_keeps_inner_spaces() {
+        let mut t = Term::new(4, 20);
+        t.process(b"ab  cd\r\nx");
+        assert_eq!(selection_text(t.screen(), (0, 0), (0, 5)), "ab  cd");
+        assert_eq!(selection_text(t.screen(), (0, 0), (1, 0)), "ab  cd\nx");
+    }
+
+    #[test]
+    fn wide_glyphs_are_copied_once() {
+        let mut t = Term::new(4, 20);
+        t.process("组价 2026".as_bytes());
+        /* the second cell of each Han glyph must not double the character */
+        assert_eq!(selection_text(t.screen(), (0, 0), (0, 8)), "组价 2026");
     }
 }

@@ -15,13 +15,27 @@ pub struct Pump {
     pub zoom: i8,
     pub respawn: bool,
     pub toggle_scan: bool,
+    /// Ctrl+Shift+C: put the selection on the system clipboard.
+    pub copy: bool,
 }
 
 /// Take every keyboard event out of the frame so egui's own Tab-focus and
 /// shortcut handling never competes with the shell. Pointer events are left
 /// alone, otherwise the buttons would stop working.
+///
+/// One thing to know before touching this: `egui-winit` intercepts Ctrl+C /
+/// Ctrl+X / Ctrl+V before we ever see a key event and turns them into
+/// `Event::Copy` / `Cut` / `Paste`. A terminal that ignored `Event::Copy` would
+/// have no working interrupt at all — Ctrl+C would look like it did nothing.
 pub fn pump(ctx: &egui::Context) -> Pump {
-    let mut out = Pump { bytes: Vec::new(), scroll: 0, zoom: 0, respawn: false, toggle_scan: false };
+    let mut out = Pump {
+        bytes: Vec::new(),
+        scroll: 0,
+        zoom: 0,
+        respawn: false,
+        toggle_scan: false,
+        copy: false,
+    };
 
     ctx.input_mut(|i| {
         let events = std::mem::take(&mut i.events);
@@ -31,6 +45,9 @@ pub fn pump(ctx: &egui::Context) -> Pump {
             match ev {
                 Event::Text(t) => out.bytes.extend_from_slice(t.as_bytes()),
                 Event::Paste(t) => out.bytes.extend_from_slice(t.as_bytes()),
+                /* egui ate the keystroke, so hand the shell what xterm would have sent */
+                Event::Copy => out.bytes.push(0x03),
+                Event::Cut => out.bytes.push(0x18),
                 Event::Key { key, pressed: true, modifiers, .. } => {
                     if key == Key::F5 {
                         out.respawn = true;
@@ -39,6 +56,13 @@ pub fn pump(ctx: &egui::Context) -> Pump {
                     /* Ctrl+G would otherwise reach the shell as BEL */
                     if modifiers.ctrl && modifiers.shift && key == Key::G {
                         out.toggle_scan = true;
+                        continue;
+                    }
+                    /* Ctrl+Shift+C never reaches `Event::Copy` (that path needs an
+                    unmodified Ctrl), so it still arrives here as a plain key. Take
+                    it before the C0 table turns it into another SIGINT. */
+                    if modifiers.ctrl && modifiers.shift && key == Key::C {
+                        out.copy = true;
                         continue;
                     }
                     if modifiers.ctrl && !modifiers.alt {
