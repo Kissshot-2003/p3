@@ -47,10 +47,6 @@ impl Term {
         self.parser.screen()
     }
 
-    pub fn screen_mut(&mut self) -> &mut vt100::Screen {
-        self.parser.screen_mut()
-    }
-
     /// Wheel input. Positive delta scrolls into the history; 0 returns to live.
     pub fn scroll(&mut self, delta: i32) {
         let sb = self.parser.screen().scrollback();

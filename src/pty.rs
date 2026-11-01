@@ -14,7 +14,6 @@ use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize}
 pub struct ShellSpec {
     pub program: String,
     pub args: Vec<String>,
-    pub label: String,
 }
 
 /// Ask PowerShell to predict from history in inline style, and paint the
@@ -66,7 +65,7 @@ impl ShellSpec {
     pub fn detect() -> Self {
         if let Ok(p) = std::env::var("AMBER_SHELL") {
             if !p.trim().is_empty() {
-                return Self { program: p, args: Vec::new(), label: "custom".into() };
+                return Self { program: p, args: Vec::new() };
             }
         }
         #[cfg(windows)]
@@ -75,19 +74,17 @@ impl ShellSpec {
                 return Self {
                     program: "pwsh.exe".into(),
                     args: powershell_args(),
-                    label: "pwsh".into(),
                 };
             }
             Self {
                 program: "powershell.exe".into(),
                 args: powershell_args(),
-                label: "powershell 5.1".into(),
             }
         }
         #[cfg(not(windows))]
         {
             let sh = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into());
-            Self { program: sh, args: vec!["-l".into()], label: "sh".into() }
+            Self { program: sh, args: vec!["-l".into()] }
         }
     }
 }
@@ -108,7 +105,6 @@ pub struct PtySession {
     writer: Box<dyn Write + Send>,
     child: Box<dyn Child + Send + Sync>,
     rx: Receiver<Vec<u8>>,
-    pub label: String,
     pub pid: Option<u32>,
     pub exited: bool,
     pub exit_code: Option<i32>,
@@ -171,7 +167,6 @@ impl PtySession {
             writer,
             child,
             rx,
-            label: spec.label,
             pid,
             exited: false,
             exit_code: None,

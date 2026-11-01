@@ -14,13 +14,14 @@ pub struct Pump {
     /// 1 = bigger, -1 = smaller, 9 = reset, 0 = untouched
     pub zoom: i8,
     pub respawn: bool,
+    pub toggle_scan: bool,
 }
 
 /// Take every keyboard event out of the frame so egui's own Tab-focus and
 /// shortcut handling never competes with the shell. Pointer events are left
 /// alone, otherwise the buttons would stop working.
 pub fn pump(ctx: &egui::Context) -> Pump {
-    let mut out = Pump { bytes: Vec::new(), scroll: 0, zoom: 0, respawn: false };
+    let mut out = Pump { bytes: Vec::new(), scroll: 0, zoom: 0, respawn: false, toggle_scan: false };
 
     ctx.input_mut(|i| {
         let events = std::mem::take(&mut i.events);
@@ -33,6 +34,11 @@ pub fn pump(ctx: &egui::Context) -> Pump {
                 Event::Key { key, pressed: true, modifiers, .. } => {
                     if key == Key::F5 {
                         out.respawn = true;
+                        continue;
+                    }
+                    /* Ctrl+G would otherwise reach the shell as BEL */
+                    if modifiers.ctrl && modifiers.shift && key == Key::G {
+                        out.toggle_scan = true;
                         continue;
                     }
                     if modifiers.ctrl && !modifiers.alt {

@@ -16,9 +16,9 @@ use crate::pty::{PtySession, ShellSpec};
 use crate::term::Term;
 use crate::theme;
 
-const PAD: f32 = 12.0;
+const PAD: f32 = 8.0;
 const SCAN_STEP: f32 = 3.0;
-const RAIL_W: f32 = 248.0;
+const BAR_H: f32 = 24.0;
 /// Thickness of the invisible resize border along the window edge.
 const EDGE_HIT: f32 = 7.0;
 
@@ -28,9 +28,7 @@ pub struct App {
     font_size: f32,
     started: Instant,
     status: String,
-    shell_label: String,
     cwd: String,
-    rail_open: bool,
     scanlines: bool,
     dump_tick: u128,
     rx_total: usize,
@@ -48,7 +46,6 @@ impl App {
             .map(|p| p.to_string_lossy().to_string())
             .unwrap_or_default();
         let spec = ShellSpec::detect();
-        let label = spec.label.clone();
 
         let (pty, status) = match PtySession::spawn(&cc.egui_ctx, spec, 45, 130, &cwd) {
             Ok(p) => (Some(p), String::new()),
@@ -61,9 +58,7 @@ impl App {
             font_size: 15.0,
             started: Instant::now(),
             status,
-            shell_label: label,
             cwd,
-            rail_open: true,
             scanlines: true,
             dump_tick: 0,
             rx_total: 0,
@@ -72,10 +67,9 @@ impl App {
     }
 
     fn pump_pty(&mut self) {
-        let Self { pty, term, status, shell_label, rx_total, last_chunk, .. } = self;
+        let Self { pty, term, status, rx_total, last_chunk, .. } = self;
         let Some(p) = pty.as_mut() else { return };
 
-        let label = p.label.clone();
         let mut got = 0usize;
         let mut reply = Vec::new();
         p.drain(&mut |chunk| {
@@ -97,9 +91,6 @@ impl App {
                 "会话已退出 · exit {} · 按 F5 重开",
                 p.exit_code.unwrap_or(-1)
             );
-        }
-        if !label.is_empty() {
-            *shell_label = label;
         }
     }
 
@@ -125,83 +116,32 @@ impl App {
         let maximized = ctx.input(|i| i.viewport().maximized.unwrap_or(false));
         let mut hit: Option<WBtn> = None;
 
-        egui::Panel::top("hud")
+        egui::Panel::top("bar")
             .frame(
                 egui::Frame::NONE
-                    .fill(theme::BG_DEEP)
-                    .stroke(Stroke::new(1.0, theme::AMBER_DEEP))
-                    .inner_margin(Margin::symmetric(10, 5)),
+                    .fill(theme::BG)
+                    .inner_margin(Margin { left: 6, right: 6, top: 3, bottom: 3 }),
             )
             .show(ui, |ui| {
-                /* drag zone first, so the title buttons added below stay on top
-                of it in the hit-test order */
-                let bar = Rect::from_min_size(
-                    ui.cursor().min,
-                    vec2(ui.available_width(), 18.0),
-                );
+                let bar = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), BAR_H - 6.0));
                 let drag = ui.interact(bar, Id::unique("amber.titlebar"), Sense::click_and_drag());
 
                 ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x = 8.0;
-                    ui.label(
-                        egui::RichText::new("RADIOSOL")
-                            .color(theme::AMBER)
-                            .size(11.5)
-                            .strong(),
-                    );
-                    ui.label(
-                        egui::RichText::new("// TERMINAL")
-                            .color(theme::AMBER_FAINT)
-                            .size(11.5),
-                    );
-
+                    if !self.status.is_empty() {
+                        ui.label(
+                            egui::RichText::new(&self.status)
+                                .color(theme::WARN)
+                                .size(11.0),
+                        );
+                    }
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
                         if let Some(b) = window_buttons(ui, maximized) {
                             hit = Some(b);
                         }
-                        ui.add_space(4.0);
-                        let up = self.started.elapsed().as_secs();
-                        ui.label(
-                            egui::RichText::new(format!("{:02}:{:02}", up / 60, up % 60))
-                                .color(theme::AMBER_FAINT)
-                                .size(11.0),
-                        );
-                        if ui
-                            .selectable_label(
-                                self.scanlines,
-                                egui::RichText::new("SCAN").size(10.0),
-                            )
-                            .clicked()
-                        {
-                            self.scanlines = !self.scanlines;
-                        }
-                        if ui
-                            .selectable_label(self.rail_open, egui::RichText::new("RAIL").size(10.0))
-                            .clicked()
-                        {
-                            self.rail_open = !self.rail_open;
-                        }
-                        ui.label(
-                            egui::RichText::new(format!("{}×{}", self.term.cols, self.term.rows))
-                                .color(theme::AMBER_FAINT)
-                                .size(10.5),
-                        );
-                        let (dot, txt) = if self.status.is_empty() {
-                            (theme::AMBER, "LINK")
-                        } else {
-                            (theme::WARN, "DOWN")
-                        };
-                        ui.label(
-                            egui::RichText::new(format!("● {txt}"))
-                                .color(dot)
-                                .size(10.5),
-                        );
                     });
                 });
 
                 if drag.drag_started() {
-                    /* the outermost pixels belong to the resize border; dragging
-                    there would fight the resize the same click already started */
                     let near_edge = ctx.pointer_latest_pos().is_some_and(|p| {
                         let vp = ctx.viewport_rect();
                         p.x - vp.left() < EDGE_HIT
@@ -283,65 +223,6 @@ impl App {
         );
     }
 
-
-    /* ----------------------------------------------------------------- rail */
-
-    fn rail(&mut self, ui: &mut egui::Ui) {
-        egui::Panel::right("rail")
-            .exact_size(RAIL_W)
-            .resizable(false)
-            .frame(
-                egui::Frame::NONE
-                    .fill(theme::BG_DEEP)
-                    .inner_margin(Margin::same(12)),
-            )
-            .show(ui, |ui| {
-                ui.spacing_mut().item_spacing.y = 6.0;
-
-                section(ui, "SESSION");
-                kv(ui, "shell", &self.shell_label);
-                kv(ui, "pid", &self.pty.as_ref().and_then(|p| p.pid).map(|p| p.to_string()).unwrap_or_else(|| "-".into()));
-                kv(ui, "size", &format!("{} × {}", self.term.cols, self.term.rows));
-                kv(ui, "scroll", &format!("{} 行", self.term.scroll_offset));
-                ui.add_space(6.0);
-
-                section(ui, "CWD");
-                ui.label(
-                    egui::RichText::new(ellipsis(&self.cwd, 42))
-                        .color(theme::AMBER_DIM)
-                        .size(11.0),
-                );
-                ui.add_space(6.0);
-
-                section(ui, "KEYS");
-                for line in [
-                    "TAB     补全 / 预测接受",
-                    "→ / END 接受内联预测",
-                    "CTRL+R  历史反查",
-                    "CTRL+C  中断命令",
-                    "PGUP/DN 翻看历史",
-                    "CTRL+±  字号  CTRL+0 复位",
-                    "F5      重开会话",
-                ] {
-                    ui.label(
-                        egui::RichText::new(line)
-                            .color(theme::AMBER_FAINT)
-                            .size(10.5)
-                            .monospace(),
-                    );
-                }
-
-                if !self.status.is_empty() {
-                    ui.add_space(8.0);
-                    section(ui, "STATUS");
-                    ui.label(
-                        egui::RichText::new(&self.status)
-                            .color(theme::WARN)
-                            .size(10.5),
-                    );
-                }
-            });
-    }
 
     /* -------------------------------------------------------------- terminal */
 
@@ -563,7 +444,7 @@ fn window_buttons(ui: &mut egui::Ui, maximized: bool) -> Option<WBtn> {
         let col = match (resp.hovered(), close) {
             (true, true) => theme::BG_DEEP,
             (true, false) => theme::AMBER_HOT,
-            _ => theme::AMBER_DIM,
+            _ => theme::AMBER_DEEP,
         };
         draw_glyph(ui.painter(), rect, glyph, col);
         if resp.clicked() {
@@ -602,40 +483,6 @@ fn draw_glyph(p: &egui::Painter, rect: Rect, g: Glyph, col: Color32) {
     }
 }
 
-fn section(ui: &mut egui::Ui, title: &str) {
-    ui.add_space(4.0);
-    ui.label(
-        egui::RichText::new(title)
-            .color(theme::AMBER_DEEP)
-            .size(9.5)
-            .strong(),
-    );
-}
-
-fn kv(ui: &mut egui::Ui, k: &str, v: &str) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 8.0;
-        ui.label(egui::RichText::new(k).color(theme::AMBER_FAINT).size(10.5));
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(
-                egui::RichText::new(v)
-                    .color(theme::AMBER)
-                    .size(10.5)
-                    .monospace(),
-            );
-        });
-    });
-}
-
-fn ellipsis(s: &str, max: usize) -> String {
-    let chars: Vec<char> = s.chars().collect();
-    if chars.len() <= max {
-        return s.to_string();
-    }
-    let tail: String = chars[chars.len() - max + 1..].iter().collect();
-    format!("…{tail}")
-}
-
 impl eframe::App for App {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
@@ -658,6 +505,9 @@ impl eframe::App for App {
                 p.write(&pump.bytes);
             }
         }
+        if pump.toggle_scan {
+            self.scanlines = !self.scanlines;
+        }
         if pump.respawn {
             self.respawn(&ctx);
         }
@@ -665,9 +515,6 @@ impl eframe::App for App {
         Self::resize_edges(&ctx);
 
         self.hud(ui);
-        if self.rail_open {
-            self.rail(ui);
-        }
         egui::CentralPanel::no_frame()
             .frame(egui::Frame::NONE.fill(theme::BG))
             .show(ui, |ui| self.terminal(ui));
