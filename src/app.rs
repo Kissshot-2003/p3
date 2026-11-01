@@ -16,7 +16,7 @@ use crate::pty::{PtySession, ShellSpec};
 use crate::term::Term;
 use crate::theme;
 
-const PAD: f32 = 8.0;
+const PAD: f32 = 10.0;
 const SCAN_STEP: f32 = 3.0;
 const BAR_H: f32 = 24.0;
 /// Thickness of the invisible resize border along the window edge.
@@ -33,6 +33,8 @@ pub struct App {
     dump_tick: u128,
     rx_total: usize,
     last_chunk: Vec<u8>,
+    shot: Option<String>,
+    shot_fired: bool,
 }
 
 impl App {
@@ -47,15 +49,21 @@ impl App {
             .unwrap_or_default();
         let spec = ShellSpec::detect();
 
+        let mut term = Term::new(45, 130);
+        if std::env::var("AMBER_SHOT").is_ok() {
+            /* only for screenshots: a fixed screen beats a lone prompt */
+            term.process(DEMO.as_bytes());
+        }
+
         let (pty, status) = match PtySession::spawn(&cc.egui_ctx, spec, 45, 130, &cwd) {
             Ok(p) => (Some(p), String::new()),
             Err(e) => (None, e),
         };
 
         Self {
-            term: Term::new(45, 130),
+            term,
             pty,
-            font_size: 15.0,
+            font_size: 16.0,
             started: Instant::now(),
             status,
             cwd,
@@ -63,6 +71,8 @@ impl App {
             dump_tick: 0,
             rx_total: 0,
             last_chunk: Vec::new(),
+            shot: std::env::var("AMBER_SHOT").ok(),
+            shot_fired: false,
         }
     }
 
@@ -203,6 +213,27 @@ impl App {
         }
     }
 
+    /// `AMBER_SHOT=<file.bmp>` grabs one frame and quits. Lets the renderer be
+    /// checked without a display in front of you.
+    fn grab(&mut self, ctx: &egui::Context) {
+        let Some(path) = self.shot.clone() else { return };
+        if !self.shot_fired && self.started.elapsed().as_millis() > 1500 {
+            self.shot_fired = true;
+            ctx.send_viewport_cmd(ViewportCommand::Screenshot(
+                egui::ScreenshotCallback::new(move |img| write_bmp(&path, &img)),
+            ));
+        }
+        if self.shot_fired {
+            let tmp = format!("{}.tmp", self.shot.as_deref().unwrap_or_default());
+            if std::path::Path::new(&tmp).exists() {
+                let _ = std::fs::rename(&tmp, self.shot.as_deref().unwrap_or_default());
+            }
+            if std::path::Path::new(self.shot.as_deref().unwrap_or_default()).exists() {
+                ctx.send_viewport_cmd(ViewportCommand::Close);
+            }
+        }
+    }
+
     /// Draws the tube surround: one dim amber hairline against the black, plus a
     /// blackout ring just inside it, so the window reads as a bezel instead of a
     /// rectangle floating on the desktop.
@@ -247,12 +278,24 @@ impl App {
             }
         }
 
-        let painter = ui.painter_at(rect);
-        painter.rect_filled(rect, CornerRadius::ZERO, theme::BG);
+        /* boot: the picture opens from a horizontal line, like the tube warming */
+        let t = self.started.elapsed().as_secs_f32();
+        let open = ease_out((t / 0.55).clamp(0.0, 1.0));
+        let vis = if open < 1.0 {
+            let h = (rect.height() * open).max(1.5);
+            Rect::from_center_size(rect.center(), vec2(rect.width(), h))
+        } else {
+            rect
+        };
+
+        let painter = ui.painter_at(vis);
+        painter.rect_filled(vis, CornerRadius::ZERO, theme::SCREEN);
 
         let screen = self.term.screen();
         let rows = self.term.rows;
         let cols = self.term.cols;
+        /* phosphor brightness is never perfectly steady */
+        let flick = 1.0 + 0.016 * (t * 43.0).sin() + 0.010 * (t * 7.3).sin();
 
         for r in 0..rows {
             let y = inner.top() + r as f32 * rh;
@@ -289,19 +332,35 @@ impl App {
                             vec2(cw, rh),
                         ),
                         CornerRadius::ZERO,
-                        b,
+                        b.gamma_multiply(flick),
                     );
                 }
 
                 if !started || fg != run_fg {
-                    flush(&painter, &mut run, run_x, y, rh, &font, run_fg);
+                    flush(
+                        &painter,
+                        &mut run,
+                        run_x,
+                        y,
+                        rh,
+                        &font,
+                        run_fg.gamma_multiply(flick * 1.22),
+                    );
                     run_x = inner.left() + c as f32 * cw;
                     run_fg = fg;
                     started = true;
                 }
                 run.push_str(&cell.contents());
             }
-            flush(&painter, &mut run, run_x, y, rh, &font, run_fg);
+            flush(
+                &painter,
+                &mut run,
+                run_x,
+                y,
+                rh,
+                &font,
+                run_fg.gamma_multiply(flick * 1.22),
+            );
         }
 
         /* caret: only at the live bottom, and only when the shell shows it */
@@ -314,18 +373,19 @@ impl App {
                         vec2(cw, rh),
                     ),
                     CornerRadius::ZERO,
-                    theme::AMBER.gamma_multiply(0.55),
+                    theme::AMBER.gamma_multiply(0.55 * flick),
                 );
             }
         }
 
         if self.scanlines {
-            let mut shapes = Vec::with_capacity((rect.height() / SCAN_STEP) as usize + 2);
-            let mut y = rect.top();
-            let stroke = Stroke::new(1.0, Color32::from_rgba_unmultiplied(0, 0, 0, 78));
-            while y < rect.bottom() {
+            let mut shapes = Vec::with_capacity((vis.height() / SCAN_STEP) as usize + 2);
+            let mut y = vis.top();
+            /* the gap lines are what sell the tube; hard edges, no blur */
+            let stroke = Stroke::new(1.0, Color32::from_rgba_unmultiplied(0, 0, 0, 40));
+            while y < vis.bottom() {
                 shapes.push(Shape::line_segment(
-                    [pos2(rect.left(), y), pos2(rect.right(), y)],
+                    [pos2(vis.left(), y), pos2(vis.right(), y)],
                     stroke,
                 ));
                 y += SCAN_STEP;
@@ -333,13 +393,68 @@ impl App {
             painter.extend(shapes);
         }
 
-        /* vignette: four edge gradients are overkill here, one inner shadow is not */
-        painter.rect_stroke(
-            rect,
-            CornerRadius::ZERO,
-            Stroke::new(1.0, Color32::from_rgba_unmultiplied(0xff, 0xb0, 0x00, 0x14)),
-            egui::StrokeKind::Inside,
+        /* vertical sync drift: a soft bright band crawling down the tube */
+        if open >= 1.0 {
+            let cycle = 13.0;
+            let band = vis.height() * 0.16;
+            let cy = vis.top() - band + (t % cycle) / cycle * (vis.height() + band * 2.0);
+            let half = band * 0.5;
+            quad_grad(
+                &painter,
+                [
+                    pos2(vis.left(), cy - half),
+                    pos2(vis.right(), cy - half),
+                    pos2(vis.right(), cy),
+                    pos2(vis.left(), cy),
+                ],
+                [
+                    Color32::TRANSPARENT,
+                    Color32::TRANSPARENT,
+                    Color32::from_rgba_unmultiplied(0xff, 0xd8, 0x90, 9),
+                    Color32::from_rgba_unmultiplied(0xff, 0xd8, 0x90, 9),
+                ],
+            );
+            quad_grad(
+                &painter,
+                [
+                    pos2(vis.left(), cy),
+                    pos2(vis.right(), cy),
+                    pos2(vis.right(), cy + half),
+                    pos2(vis.left(), cy + half),
+                ],
+                [
+                    Color32::from_rgba_unmultiplied(0xff, 0xd8, 0x90, 9),
+                    Color32::from_rgba_unmultiplied(0xff, 0xd8, 0x90, 9),
+                    Color32::TRANSPARENT,
+                    Color32::TRANSPARENT,
+                ],
+            );
+        }
+
+        vignette(&painter, vis);
+
+        /* glass: one soft highlight in the top-left, the way a curved face
+        catches a room light */
+        quad_grad(
+            &painter,
+            [vis.left_top(), vis.right_top(), vis.right_bottom(), vis.left_bottom()],
+            [
+                Color32::from_rgba_unmultiplied(0xff, 0xe6, 0xc0, 15),
+                Color32::TRANSPARENT,
+                Color32::TRANSPARENT,
+                Color32::from_rgba_unmultiplied(0xff, 0xe6, 0xc0, 4),
+            ],
         );
+
+        if open < 1.0 {
+            let glow = 255.0 * (1.0 - open);
+            let line = Stroke::new(
+                1.5,
+                Color32::from_rgba_unmultiplied(0xff, 0xe0, 0xa3, glow as u8),
+            );
+            painter.line_segment([vis.left_bottom(), vis.right_bottom()], line);
+            painter.line_segment([vis.left_top(), vis.right_top()], line);
+        }
 
         self.dump(rect, inner, cw, rh);
     }
@@ -394,15 +509,122 @@ fn flush(
     }
     let text = run.trim_end();
     if !text.is_empty() {
-        painter.text(
-            pos2(x, y + rh * 0.5),
-            Align2::LEFT_CENTER,
-            text,
-            font.clone(),
-            color,
-        );
+        let base = pos2(x, y + rh * 0.5);
+        /* bloom on the cheap: two dim copies either side of the glyphs, plus a
+        half-pixel repeat so thin pixel lettering does not read as washed out */
+        let halo = color.gamma_multiply(0.20);
+        let bloom = color.gamma_multiply(0.13);
+        painter.text(base + vec2(-2.6, 0.0), Align2::LEFT_CENTER, text, font.clone(), bloom);
+        painter.text(base + vec2(2.6, 0.0), Align2::LEFT_CENTER, text, font.clone(), bloom);
+        painter.text(base + vec2(-1.4, 0.0), Align2::LEFT_CENTER, text, font.clone(), halo);
+        painter.text(base + vec2(1.4, 0.0), Align2::LEFT_CENTER, text, font.clone(), halo);
+        painter.text(base + vec2(0.5, 0.0), Align2::LEFT_CENTER, text, font.clone(), color);
+        painter.text(base, Align2::LEFT_CENTER, text, font.clone(), color);
     }
     run.clear();
+}
+
+const DEMO: &str = "\
+\x1b[1mAMBER TERMINAL\x1b[0m   phosphor test pattern\r\n\
+\r\n\
+[  OK  ] warm boot ................. 1.42 s\r\n\
+[  OK  ] tube bias ................ 62 V\r\n\
+[ WARN ] no such device: /dev/radio0\r\n\
+\r\n\
+  console.cpp          1942\r\n\
+  graphics.lib        12003\r\n\
+  radio.bin           95911\r\n\
+\r\n\
+  colours 31-36: \x1b[31m31 \x1b[32m32 \x1b[33m33 \x1b[34m34 \x1b[35m35 \x1b[36m36\x1b[0m\r\n\
+  dim \x1b[2mthis line is dim\x1b[0m   bold \x1b[1mthis line is bold\x1b[0m\r\n\
+  inverse \x1b[7m selected block \x1b[0m   underline \x1b[4munderlined\x1b[0m\r\n\
+\r\n\
+  中文输出：寿县项目 工程量清单 组价 2026-11-02\r\n\
+\r\n";
+
+/// 32-bit BMP: no encoder dependency, and every image viewer reads it.
+fn write_bmp(path: &str, img: &egui::ColorImage) {
+    let (w, h) = (img.size[0], img.size[1]);
+    let row = w * 4;
+    let pad = (4 - row % 4) % 4;
+    let data_len = (row + pad) * h;
+    let mut out = Vec::with_capacity(54 + data_len);
+    out.extend_from_slice(b"BM");
+    out.extend_from_slice(&((54 + data_len) as u32).to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&54u32.to_le_bytes());
+    out.extend_from_slice(&40u32.to_le_bytes());
+    out.extend_from_slice(&(w as i32).to_le_bytes());
+    out.extend_from_slice(&(h as i32).to_le_bytes());
+    out.extend_from_slice(&1u16.to_le_bytes());
+    out.extend_from_slice(&32u16.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&(data_len as u32).to_le_bytes());
+    out.extend_from_slice(&2835i32.to_le_bytes());
+    out.extend_from_slice(&2835i32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    out.extend_from_slice(&0u32.to_le_bytes());
+    for y in (0..h).rev() {
+        for x in 0..w {
+            let p = img.pixels[y * w + x];
+            out.push(p.b());
+            out.push(p.g());
+            out.push(p.r());
+            out.push(255);
+        }
+        for _ in 0..pad {
+            out.push(0);
+        }
+    }
+    let tmp = format!("{path}.tmp");
+    if std::fs::write(&tmp, out).is_ok() {
+        let _ = std::fs::rename(&tmp, path);
+    }
+}
+
+fn ease_out(t: f32) -> f32 {
+    1.0 - (1.0 - t).powi(3)
+}
+
+/// One quad with per-corner colours. egui has no gradient primitive, but a
+/// vertex-coloured mesh is exactly that and costs nothing.
+fn quad_grad(p: &egui::Painter, pts: [egui::Pos2; 4], cols: [Color32; 4]) {
+    let mut m = egui::Mesh::default();
+    for (pt, c) in pts.into_iter().zip(cols) {
+        m.colored_vertex(pt, c);
+    }
+    m.add_triangle(0, 1, 2);
+    m.add_triangle(0, 2, 3);
+    p.add(Shape::mesh(m));
+}
+
+/// Darkens all four edges. Overlapping corners double up, which is what a real
+/// tube does too.
+fn vignette(p: &egui::Painter, rect: Rect) {
+    let d = (rect.width().min(rect.height()) * 0.13).max(20.0);
+    let dark = Color32::from_black_alpha(34);
+    let clear = Color32::TRANSPARENT;
+    let (l, r, t, b) = (rect.left(), rect.right(), rect.top(), rect.bottom());
+    quad_grad(
+        p,
+        [pos2(l, t), pos2(r, t), pos2(r, t + d), pos2(l, t + d)],
+        [dark, dark, clear, clear],
+    );
+    quad_grad(
+        p,
+        [pos2(l, b - d), pos2(r, b - d), pos2(r, b), pos2(l, b)],
+        [clear, clear, dark, dark],
+    );
+    quad_grad(
+        p,
+        [pos2(l, t), pos2(l + d, t), pos2(l + d, b), pos2(l, b)],
+        [dark, clear, clear, dark],
+    );
+    quad_grad(
+        p,
+        [pos2(r - d, t), pos2(r, t), pos2(r, b), pos2(r - d, b)],
+        [clear, dark, dark, clear],
+    );
 }
 
 #[derive(Clone, Copy)]
@@ -444,7 +666,7 @@ fn window_buttons(ui: &mut egui::Ui, maximized: bool) -> Option<WBtn> {
         let col = match (resp.hovered(), close) {
             (true, true) => theme::BG_DEEP,
             (true, false) => theme::AMBER_HOT,
-            _ => theme::AMBER_DEEP,
+            _ => theme::AMBER_FAINT,
         };
         draw_glyph(ui.painter(), rect, glyph, col);
         if resp.clicked() {
@@ -491,9 +713,9 @@ impl eframe::App for App {
 
         let pump = input::pump(&ctx);
         match pump.zoom {
-            1 => self.font_size = (self.font_size + 1.0).min(30.0),
-            -1 => self.font_size = (self.font_size - 1.0).max(9.0),
-            9 => self.font_size = 15.0,
+            1 => self.font_size = (self.font_size + 2.0).min(32.0),
+            -1 => self.font_size = (self.font_size - 2.0).max(10.0),
+            9 => self.font_size = 16.0,
             _ => {}
         }
         if pump.scroll != 0 {
@@ -520,6 +742,7 @@ impl eframe::App for App {
             .show(ui, |ui| self.terminal(ui));
 
         Self::chrome(&ctx);
+        self.grab(&ctx);
 
         ctx.request_repaint_after(Duration::from_millis(16));
     }

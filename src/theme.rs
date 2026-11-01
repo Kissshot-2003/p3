@@ -9,6 +9,9 @@ use std::sync::Arc;
 use eframe::egui::{self, Color32, FontData, FontDefinitions, FontFamily};
 
 pub const BG: Color32 = Color32::from_rgb(0x14, 0x0d, 0x03);
+/// The tube face itself: a touch darker than the panel, so the glass reads as
+/// a hole in the machine instead of a filled rectangle.
+pub const SCREEN: Color32 = Color32::from_rgb(0x05, 0x03, 0x00);
 pub const BG_DEEP: Color32 = Color32::from_rgb(0x0a, 0x07, 0x02);
 pub const AMBER: Color32 = Color32::from_rgb(0xff, 0xb0, 0x00);
 pub const AMBER_HOT: Color32 = Color32::from_rgb(0xff, 0xe0, 0xa3);
@@ -83,48 +86,46 @@ pub fn ansi(c: vt100::Color) -> Color32 {
     }
 }
 
-/// Consolas for Latin, SimHei as the CJK fallback. Picked from disk rather than
-/// bundled so the binary stays small; a missing font is not an error.
+/// VT323 is bundled: it is a pixel-grid face drawn for exactly this kind of
+/// screen. Latin comes from it, CJK falls through to a system font because the
+/// bundled face has no Han glyphs at all.
 pub fn install_fonts(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
 
-    #[cfg(windows)]
-    const CANDIDATES: [&str; 3] = [
-        "C:/Windows/Fonts/consola.ttf",
-        "C:/Windows/Fonts/CascadiaMono.ttf",
-        "C:/Windows/Fonts/simhei.ttf",
-    ];
-    #[cfg(target_os = "macos")]
-    const CANDIDATES: [&str; 2] = ["/System/Library/Fonts/Menlo.ttc", "/System/Library/Fonts/Hiragino Sans GB.ttc"];
-    #[cfg(all(unix, not(target_os = "macos")))]
-    const CANDIDATES: [&str; 3] = [
-        "/usr/share/fonts/truetype/dejavu/DejaVuSansMono.ttf",
-        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
-        "/usr/share/fonts/truetype/noto/NotoSansMono-Regular.ttf",
-    ];
+    fonts.font_data.insert(
+        "vt323".to_owned(),
+        Arc::new(FontData::from_static(include_bytes!(
+            "../assets/VT323-Regular.ttf"
+        ))),
+    );
 
-    let mut mono: Vec<String> = Vec::new();
-    for (i, path) in CANDIDATES.iter().enumerate() {
+    #[cfg(windows)]
+    const CJK: [&str; 2] = ["C:/Windows/Fonts/simhei.ttf", "C:/Windows/Fonts/msyh.ttc"];
+    #[cfg(target_os = "macos")]
+    const CJK: [&str; 1] = ["/System/Library/Fonts/Hiragino Sans GB.ttc"];
+    #[cfg(all(unix, not(target_os = "macos")))]
+    const CJK: [&str; 1] = ["/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"];
+
+    let mut chain: Vec<String> = vec!["vt323".to_owned()];
+    for (i, path) in CJK.iter().enumerate() {
         let Ok(bytes) = std::fs::read(path) else { continue };
-        let name = format!("f{i}");
+        let name = format!("cjk{i}");
         fonts
             .font_data
             .insert(name.clone(), Arc::new(FontData::from_owned(bytes)));
-        mono.push(name);
+        chain.push(name);
     }
 
-    if !mono.is_empty() {
-        fonts
-            .families
-            .entry(FontFamily::Monospace)
-            .or_default()
-            .splice(0..0, mono.clone());
-        fonts
-            .families
-            .entry(FontFamily::Proportional)
-            .or_default()
-            .extend(mono);
-    }
+    fonts
+        .families
+        .entry(FontFamily::Monospace)
+        .or_default()
+        .splice(0..0, chain.clone());
+    fonts
+        .families
+        .entry(FontFamily::Proportional)
+        .or_default()
+        .splice(0..0, chain);
 
     ctx.set_fonts(fonts);
 }
