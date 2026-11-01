@@ -89,11 +89,10 @@ pub fn install_fonts(ctx: &egui::Context) {
     let mut fonts = FontDefinitions::default();
 
     #[cfg(windows)]
-    const CANDIDATES: [&str; 4] = [
+    const CANDIDATES: [&str; 3] = [
         "C:/Windows/Fonts/consola.ttf",
         "C:/Windows/Fonts/CascadiaMono.ttf",
         "C:/Windows/Fonts/simhei.ttf",
-        "C:/Windows/Fonts/msyh.ttc",
     ];
     #[cfg(target_os = "macos")]
     const CANDIDATES: [&str; 2] = ["/System/Library/Fonts/Menlo.ttc", "/System/Library/Fonts/Hiragino Sans GB.ttc"];
