@@ -55,7 +55,7 @@ impl App {
         let spec = ShellSpec::detect();
 
         let mut term = Term::new(45, 130);
-        if std::env::var("AMBER_SHOT").is_ok() {
+        if std::env::var("P3_SHOT").is_ok() {
             /* only for screenshots: a fixed screen beats a lone prompt */
             term.process(DEMO.as_bytes());
         }
@@ -76,7 +76,7 @@ impl App {
             dump_tick: 0,
             rx_total: 0,
             last_chunk: Vec::new(),
-            shot: std::env::var("AMBER_SHOT").ok(),
+            shot: std::env::var("P3_SHOT").ok(),
             shot_fired: false,
         }
     }
@@ -220,7 +220,7 @@ impl App {
         }
     }
 
-    /// `AMBER_SHOT=<file.bmp>` grabs one frame and quits. Lets the renderer be
+    /// `P3_SHOT=<file.bmp>` grabs one frame and quits. Lets the renderer be
     /// checked without a display in front of you.
     fn grab(&mut self, ctx: &egui::Context) {
         let Some(path) = self.shot.clone() else { return };
@@ -507,11 +507,11 @@ impl App {
         self.dump(rect, inner, cw, rh);
     }
 
-    /// `AMBER_DUMP=<path>` writes the current screen to disk twice a second.
+    /// `P3_DUMP=<path>` writes the current screen to disk twice a second.
     /// Useful for bug reports, and the only way to check the VT chain without
     /// eyeballing the window.
     fn dump(&mut self, rect: Rect, inner: Rect, cw: f32, rh: f32) {
-        let Ok(path) = std::env::var("AMBER_DUMP") else { return };
+        let Ok(path) = std::env::var("P3_DUMP") else { return };
         let tick = self.started.elapsed().as_millis() / 500;
         if tick == self.dump_tick {
             return;
@@ -610,7 +610,7 @@ fn is_wide(c: char) -> bool {
 }
 
 const DEMO: &str = "\
-\x1b[1mAMBER TERMINAL\x1b[0m   phosphor test pattern\r\n\
+\x1b[1mP3\x1b[0m   phosphor test pattern\r\n\
 \r\n\
 [  OK  ] warm boot ................. 1.42 s\r\n\
 [  OK  ] tube bias ................ 62 V\r\n\

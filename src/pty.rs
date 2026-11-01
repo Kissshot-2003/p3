@@ -63,7 +63,7 @@ fn powershell_args() -> Vec<String> {
 
 impl ShellSpec {
     pub fn detect() -> Self {
-        if let Ok(p) = std::env::var("AMBER_SHELL") {
+        if let Ok(p) = std::env::var("P3_SHELL") {
             if !p.trim().is_empty() {
                 return Self { program: p, args: Vec::new() };
             }

@@ -1,4 +1,6 @@
-//! AMBER TERMINAL — a RADIOSOL-style phosphor terminal, native.
+//! P3 — an amber phosphor terminal, native.
+//!
+//! Named after the phosphor: P1 is the green one, P3 is the amber one, P4 the white.
 
 mod app;
 mod input;
@@ -13,7 +15,7 @@ fn main() -> eframe::Result<()> {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([1180.0, 760.0])
             .with_min_inner_size([720.0, 420.0])
-            .with_title("AMBER TERMINAL")
+            .with_title("P3")
             /* no OS title bar: a white chrome strip around a black tube is the
             one thing the phosphor look cannot survive */
             .with_decorations(false)
@@ -23,7 +25,7 @@ fn main() -> eframe::Result<()> {
     };
 
     eframe::run_native(
-        "amber-terminal",
+        "p3",
         options,
         Box::new(|cc| Ok(Box::new(app::App::new(cc)) as Box<dyn eframe::App>)),
     )

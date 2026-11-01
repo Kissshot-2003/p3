@@ -1,16 +1,16 @@
 @echo off
-rem AMBER TERMINAL - 原生 Rust 终端
+rem P3 - 琥珀磷光终端（原生 Rust）
 setlocal
 cd /d "%~dp0"
 
-if not exist "target\release\amber-gui.exe" (
+if not exist "target\release\p3.exe" (
   echo [1/2] 首次运行，正在编译（需要几分钟）...
   cargo build --release
   if errorlevel 1 goto fail
 )
 
-echo [2/2] 启动 AMBER TERMINAL
-start "" "target\release\amber-gui.exe"
+echo [2/2] 启动 P3
+start "" "target\release\p3.exe"
 exit /b 0
 
 :fail

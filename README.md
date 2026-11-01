@@ -1,4 +1,6 @@
-# AMBER TERMINAL (Rust GUI)
+# P3 — 琥珀磷光终端
+
+名字取自显像管磷光粉的军标代号：**P1 绿、P3 琥珀**、P4 白。这台机器就是一块 P3 管。
 
 RADIOSOL 那种琥珀单色 CRT 终端，**原生 Rust 桌面应用**。
 
@@ -6,7 +8,7 @@ RADIOSOL 那种琥珀单色 CRT 终端，**原生 Rust 桌面应用**。
 cargo run --release
 ```
 
-产物：`target/release/amber-gui.exe`（单文件，无需运行时）。
+产物：`target/release/p3.exe`（单文件，无需运行时）。
 
 ## 为什么是原生而不是网页
 
@@ -107,11 +109,11 @@ PSReadLine 启动时会发 `ESC[6n`（查询光标位置）并**阻塞等待回�
 
 | 变量 | 作用 |
 |---|---|
-| `AMBER_SHELL` | 覆盖要启动的 shell 可执行文件 |
-| `AMBER_DUMP` | 每 0.5 秒把当前屏幕写到该路径（排障用） |
-| `AMBER_SHOT` | 抓一帧存成 32 位 BMP 后退出（无显示器时验证渲染） |
+| `P3_SHELL` | 覆盖要启动的 shell 可执行文件 |
+| `P3_DUMP` | 每 0.5 秒把当前屏幕写到该路径（排障用） |
+| `P3_SHOT` | 抓一帧存成 32 位 BMP 后退出（无显示器时验证渲染） |
 
-`AMBER_DUMP` 的产物长这样，用来确认 PTY/VT 链路而不必看屏幕：
+`P3_DUMP` 的产物长这样，用来确认 PTY/VT 链路而不必看屏幕：
 
 ```
 # grid 110x40  cell 8.25x17.56  rect 932x729  inner 908x705
