@@ -1,152 +1,144 @@
-# P3 — 琥珀磷光终端
+# P3 — Amber Phosphor Terminal
 
-简体中文 · [English](README.en.md)
+English · [简体中文](README.zh-CN.md)
 
-名字取自显像管磷光粉的军标代号：**P1 绿、P3 琥珀**、P4 白。这台机器就是一块 P3 管。
+The name is the military designation of the phosphor itself: **P1 green, P3 amber**, P4 white. This machine is a P3 tube.
 
-RADIOSOL 那种琥珀单色 CRT 终端，**原生 Rust 桌面应用**。
+A RADIOSOL-style monochrome amber CRT terminal, as a **native Rust desktop app**.
 
-![P3 终端截图](docs/screenshot.png)
+![P3 terminal](docs/screenshot.png)
 
 ```bash
 cargo run --release
 ```
 
-产物：`target/release/p3.exe`（单文件，无需运行时）。
+Output: `target/release/p3.exe`, a single file with no runtime dependency.
 
-需要 Rust 1.85+（`edition = "2024"`）。Windows 开箱可用（ConPTY）；Linux / macOS 走 `openpty`，未做完整验证。
+Requires Rust 1.85+ (`edition = "2024"`). Works out of the box on Windows (ConPTY); Linux and macOS go through `openpty` but are not fully tested.
 
-## 为什么是原生而不是网页
+## Why native, not a web page
 
-同名的网页版只能拿到 shell 的管道输出，行编辑、预测、补全全得自己手搓，还得开个本地服务。
-原生版直接开一个**真 PTY**（Windows 用 ConPTY），按键直通 shell —— PowerShell 的 PSReadLine 原样工作：
+A web terminal only ever sees the shell's piped output, so line editing, prediction and completion all have to be rebuilt by hand — and it needs a local server to boot.
 
-- 内联历史预测（灰字），`→` / `End` 接受
-- 语法高亮、多行编辑、括号匹配
-- `Tab` 菜单补全，含每个参数的签名
+This one opens a **real PTY** (ConPTY on Windows) and passes keys straight through, so PowerShell's PSReadLine works exactly as it does in any other terminal:
 
-终端模拟器该做的事这里只做最小集，剩下的交给 shell 自己。
+- inline history prediction (grey text), accepted with `→` / `End`
+- syntax highlighting, multi-line editing, bracket matching
+- `Tab` completion menu with a signature per parameter
 
-## 架构
+The emulator does the minimum a terminal has to do and lets the shell own the rest.
+
+## Architecture
 
 ```
-src/main.rs    窗口与 eframe 启动（无系统标题栏）
-src/app.rs     机壳 + 显像管 + 标题栏 + 网格渲染（每帧把 vt100 网格合并成色块 run）
-src/pty.rs     portable-pty 会话：ConPTY / openpty，读写线程，resize
-src/term.rs    vt100 解析器包装 + 设备查询应答
-src/input.rs   egui 按键 → xterm 字节序列
-src/theme.rs   琥珀色板、ANSI 折叠、字体
+src/main.rs    window and eframe startup (no system title bar)
+src/app.rs     cabinet + tube + title bar + grid rendering (merges the vt100 grid into colour runs each frame)
+src/pty.rs     portable-pty session: ConPTY / openpty, reader and writer threads, resize
+src/term.rs    vt100 parser wrapper + device query replies
+src/input.rs   egui keys → xterm byte sequences
+src/theme.rs   amber palette, ANSI folding, fonts
 ```
 
-- **窗口**：`with_decorations(false)`，标题栏自己画。系统那圈白底会把整块暗屏衬得像贴纸
-- **PTY**：`portable-pty`（wezterm 那套），Windows 走 ConPTY
-- **VT 解析**：`vt100`，8000 行回滚
-- **渲染**：`egui`/wgpu 自绘网格，相邻同色 cell 合并成一个 glyph run
-- **单色**：所有 ANSI 色（含 24 位真彩）按亮度折回一条琥珀色阶
-- **字体**：内置 VT323（OFL），点阵字形；中文回落到系统黑体
+- **Window**: `with_decorations(false)`, title bar drawn in-app. The stock white frame makes a dark screen look like a sticker
+- **PTY**: `portable-pty` (the wezterm one), ConPTY on Windows
+- **VT parsing**: `vt100`, 8000 lines of scrollback
+- **Rendering**: hand-drawn grid on `egui`/wgpu; adjacent cells of the same colour merge into one glyph run
+- **Monochrome**: every ANSI colour, 24-bit truecolour included, folds onto one amber ramp by luminance
+- **Fonts**: VT323 (OFL) built in for the pixel face; Chinese falls back to a system sans
 
-## 屏幕
+## The screen
 
-不是把字画在深色背景上就算 CRT。先得有个**机器**，屏幕上才有画面：
+Painting amber text on a dark background is not a CRT. There has to be a **machine** around the picture first:
 
-| 效果 | 做法 |
+| Effect | How |
 |---|---|
-| 机壳 | 窗口内 22px 一圈暖色塑料，上亮下暗的顶点渐变；玻璃外一圈纯黑凹槽 |
-| 玻璃 | 直角显像管面（不做圆角，硬边更像机柜上的工业件），内缘一道 1px 暖光，外缘再套一圈更弱的反光 |
-| 磷光辉光 | 每个字形左右各画两层低透明度副本（外层更散、内层更紧） |
-| 扫描线 | 每 3px 一条 1px 暗带，对齐设备像素，用矩形填而不是描边（描边会被抗锯齿摊薄成一半） |
-| 屏面雾光 | 屏幕中线往上下各一条极淡暖色渐隐，免得空屏是死黑一片 |
-| 场同步漂移 | 一条半透明亮带缓慢下移，13 秒一轮 |
-| 暗角 | 四边顶点渐变，角上自然叠得更深 |
-| 玻璃反光 | 左上角一块极淡的暖白渐变 |
-| 亮度抖动 | 两个不同频率的正弦叠出 ±2% 的磷光波动，外加每 9 秒一次 2px 水平错位 |
-| 电源灯 | 右下角一颗琥珀色小灯，缓慢呼吸 |
-| 开机 | 画面从一条水平线展开，边缘留一道余亮 |
+| Cabinet | 22px of warm plastic around the inside of the window, vertex gradient light at the top and dark at the bottom; a pure black recess around the glass |
+| Glass | Square-cornered tube face (no rounding — a hard edge reads as an industrial part), a 1px warm highlight on the inner rim, a weaker reflection ring outside it |
+| Phosphor bloom | Two low-opacity copies either side of every glyph, the outer pair looser and the inner pair tighter |
+| Scanlines | A 1px dark band every 3px, snapped to device pixels, drawn as a filled rect rather than a stroke (antialiasing halves a stroke's opacity) |
+| Screen haze | A very faint warm falloff above and below the middle line, so an empty screen is not dead black |
+| Field drift | A translucent bright band creeping down the screen, one pass every 13 seconds |
+| Vignette | Vertex gradients on all four sides, so the corners stack up darker on their own |
+| Glass reflection | A very faint warm-white gradient in the top-left corner |
+| Brightness jitter | Two sine waves at different frequencies for ±2% phosphor wobble, plus a 2px horizontal slip every 9 seconds |
+| Power lamp | A small amber lamp in the bottom-right corner, breathing slowly |
+| Power-on | The picture opens from a single horizontal line, leaving a bright trace at the edge |
 
-### 等宽网格
+### The monospace grid
 
-单元格宽度不是按拉丁字母的字宽取的，而是**按半个汉字反推**：`cw = 汉字宽 / 2`。
+Cell width is not taken from the Latin advance. It is derived **from half a Han character**: `cw = han_width / 2`.
 
-两个字体链里的字面本来就不一致 —— VT323 的 advance 是 0.40 em（16px 字号下 6.4px），
-中文回落的黑体是 1.00 em（16px）。如果拿 6.4px 当格子，一个汉字会吃掉 2.5 格，
-每写一个汉字就向右漂 0.25 格，整个中文行看着就不是等宽的。
+The two faces in the font chain do not agree — VT323 advances 0.40 em (6.4px at a 16px size) while the Chinese fallback advances 1.00 em (16px). Use 6.4px as the cell and one Han character eats 2.5 cells, drifting a quarter cell to the right with every character, and the whole Chinese line stops looking monospaced.
 
-所以：
+So:
 
-- `cw = 汉字宽 / 2`（16px 字号下 8.0px），汉字正好两格
-- 拉丁字符用 `TextFormat::extra_letter_spacing` 把 advance 撑到满格（这里补 1.6px），
-  字与字之间才有缝，不再贴在一起
-- 一行按「颜色」和「单/双宽」两种边界切段，双宽段不加字距，因为本身已经占满两格
-- 行距 = 字体自带行高 × 1.22，不然像素字体的下伸部会挨到一起
+- `cw = han_width / 2` (8.0px at 16px), which puts a Han character on exactly two cells
+- Latin runs use `TextFormat::extra_letter_spacing` to stretch the advance out to a full cell (1.6px here), which is what puts a gap between letters instead of letting them touch
+- A row is split into runs on two boundaries at once, colour and single/dual width; dual-width runs get no extra spacing since they already fill two cells
+- Line pitch is the font's own row height × 1.22, otherwise the descenders of a pixel face collide
 
-### 第二个坑：空白格不是没有字符
+### Pitfall 2: a blank cell is not an empty string
 
-`vt100` 把空白格存成**零字节**，`cell.contents()` 返回 `""`。如果照着网格拼接 run 时把空串直接
-`push_str` 进去，这个格子就没占任何字宽，而 run 的起点是按列算好的 —— 结果是空格后面整段左移一格：
+`vt100` stores a blank cell as **zero bytes**, so `cell.contents()` returns `""`. Push that straight into a run while walking the grid and the cell occupies no width at all — but the run's origin was computed from the column, so everything after the gap slides one cell left:
 
 ```
 组价 2026-11-02   →   组价2026-11-02
 ```
 
-只在「宽字符 → 空格 → 窄字符」的边界发作，因为其它情况切段时会把起点重新对齐到列。
-现在空串统一补一个空格进 run。
+It only shows up on a `wide → space → narrow` boundary, because any other case starts a new run and re-anchors to the column. Empty strings now push a single space into the run.
 
-### 第三个坑：Ctrl+C 到不了你手里
+### Pitfall 3: Ctrl+C never reaches you
 
-`egui-winit` 在把按键交给应用之前就把 `Ctrl+C` / `Ctrl+X` / `Ctrl+V` 换成了
-`Event::Copy` / `Cut` / `Paste` —— 一个普通的 `Event::Key` 根本不会出现。
-只写 `Event::Key` 分支的终端，`Ctrl+C` 按下去毫无反应，像坏了。
+`egui-winit` rewrites `Ctrl+C` / `Ctrl+X` / `Ctrl+V` into `Event::Copy` / `Cut` / `Paste` **before** handing events to the app — a plain `Event::Key` for them never exists. A terminal that only matches on `Event::Key` does nothing when you press `Ctrl+C`, and looks broken.
 
-所以 `input.rs` 里这三个事件要自己翻译回字节：`Copy` → `0x03`（SIGINT）、
-`Cut` → `0x18`、`Paste` → 直接写进 PTY。
+So `input.rs` translates those three events back into bytes: `Copy` → `0x03` (SIGINT), `Cut` → `0x18`, `Paste` → written straight to the PTY.
 
-反过来，因为那条复制路径要求 Ctrl **不带** Shift，`Ctrl+Shift+C` 仍然是普通按键，
-能在 `key_bytes` 的 C0 表把它变成又一个 SIGINT 之前截下来。
+Conversely, because that copy path requires Ctrl **without** Shift, `Ctrl+Shift+C` still arrives as an ordinary key and can be intercepted before the C0 table turns it into yet another SIGINT.
 
-### 第四个坑：PSReadLine 在等你回话
+### Pitfall 4: PSReadLine is waiting for an answer
 
-PSReadLine 启动时会发 `ESC[6n`（查询光标位置）并**阻塞等待回复**。不回就是一片空白、看起来像卡死。`term.rs::respond` 负责应答 CPR / DA / DSR。
+On startup PSReadLine sends `ESC[6n` (query cursor position) and **blocks until it gets a reply**. No reply means a blank screen that looks like a hang. `term.rs::respond` answers CPR / DA / DSR.
 
-## 快捷键
+## Keys
 
-| 键 | 作用 |
+| Key | Action |
 |---|---|
-| `Tab` | shell 补全 / 接受预测 |
-| `→` `End` | 接受内联预测 |
-| `Ctrl+R` | 历史反查 |
-| `Ctrl+C` | 中断（发 SIGINT，不是复制） |
-| 鼠标拖选 | 选中文本，跨行连续选择 |
-| `Ctrl+Shift+C` | 复制选区到剪贴板 |
-| `Ctrl+V` | 粘贴（多行也照发，shell 自己处理） |
-| `PgUp` / `PgDn` | 翻看回滚缓冲 |
-| `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | 字号 / 复位 |
-| `F5` | 重开会话 |
-| `Ctrl+Shift+G` | 扫描线开关 |
+| `Tab` | shell completion / accept prediction |
+| `→` `End` | accept inline prediction |
+| `Ctrl+R` | reverse history search |
+| `Ctrl+C` | interrupt (sends SIGINT, does not copy) |
+| Drag with the mouse | select text, continuously across lines |
+| `Ctrl+Shift+C` | copy the selection |
+| `Ctrl+V` | paste (multi-line goes through as-is; the shell decides) |
+| `PgUp` / `PgDn` | scroll the back buffer |
+| `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | font size / reset |
+| `F5` | restart the session |
+| `Ctrl+Shift+G` | toggle scanlines |
 
-## 窗口
+## The window
 
-系统标题栏被去掉了，这几件事由应用自己接管：
+The system title bar is gone, so the app takes over these:
 
-| 操作 | 效果 |
+| Action | Result |
 |---|---|
-| 拖标题栏空白处 | 移动窗口 |
-| 双击标题栏 | 最大化 / 还原 |
-| 窗口四边、四角 7 px 内拖动 | 缩放（光标会变） |
-| 右上角三个冲压字键 | 最小化 / 最大化 / 关闭（斜边倒角，按下键面点亮） |
+| Drag empty title bar space | move the window |
+| Double-click the title bar | maximise / restore |
+| Drag within 7px of any edge or corner | resize (cursor changes) |
+| The three stamped keys top right | minimise / maximise / close (bevelled, face lights when pressed) |
 
-去掉系统装饰的代价是 Windows 的 Aero Snap（拖到屏幕顶部最大化）不再触发，用双击标题栏代替。
+The cost of dropping system decorations is that Windows Aero Snap (drag to the top edge to maximise) no longer fires; double-clicking the title bar covers it.
 
-选中文字后按 `Ctrl+Shift+C` 复制。单击任意位置取消选区。
+Select text with the mouse, then `Ctrl+Shift+C` to copy. A single click anywhere clears the selection.
 
-## 环境变量
+## Environment
 
-| 变量 | 作用 |
+| Variable | Purpose |
 |---|---|
-| `P3_SHELL` | 覆盖要启动的 shell 可执行文件 |
-| `P3_DUMP` | 每 0.5 秒把当前屏幕写到该路径（排障用） |
-| `P3_SHOT` | 抓一帧存成 32 位 BMP 后退出（无显示器时验证渲染） |
+| `P3_SHELL` | override the shell executable to launch |
+| `P3_DUMP` | dump the current screen to this path every 0.5s (debugging) |
+| `P3_SHOT` | grab one frame to a 32-bit BMP and exit (verify rendering without a display) |
 
-`P3_DUMP` 的产物长这样，用来确认 PTY/VT 链路而不必看屏幕：
+The `P3_DUMP` output looks like this and is enough to confirm the PTY/VT chain without looking at a screen:
 
 ```
 # grid 110x40  cell 8.25x17.56  rect 932x729  inner 908x705
@@ -154,16 +146,16 @@ PSReadLine 启动时会发 `ESC[6n`（查询光标位置）并**阻塞等待回�
 PS C:\...> 
 ```
 
-## 已知限制
+## Known limits
 
-- 中文字符宽度靠字体天然等宽近似，复杂混排可能有一格偏移
-- 选区只覆盖当前屏幕：滚动、缩放、resize 都会清掉，因为格坐标会失效
-- 没有超链接点击，也没有鼠标报告（`vim` / `htop` 里点不动）
-- 无桶形畸变：要自定义 wgpu 渲染通道，egui 图层做不到
+- Chinese width relies on the font being naturally uniform; heavy mixed typesetting can be off by a cell
+- The selection only covers what is on screen: scrolling, zooming and resizing all clear it, because cell coordinates stop meaning anything
+- No hyperlink clicking and no mouse reporting (`vim` and `htop` cannot be clicked or scrolled)
+- No barrel distortion: that needs a custom wgpu render pass, which the egui layer cannot do
 
-## 许可
+## Licence
 
-代码 MIT，见 `LICENSE`。
+Code is MIT, see `LICENSE`.
 
-内置字体 VT323 由 Peter Hull 制作，SIL Open Font License 1.1，全文见 `assets/OFL.txt`。
-中文回落到系统自带字体，不随程序分发。
+The bundled VT323 font is by Peter Hull, SIL Open Font License 1.1, full text in `assets/OFL.txt`.
+Chinese falls back to a system font and is not redistributed with the binary.
