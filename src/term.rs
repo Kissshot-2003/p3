@@ -7,7 +7,6 @@ pub struct Term {
     parser: vt100::Parser,
     pub rows: u16,
     pub cols: u16,
-    pub scroll_offset: usize,
     /// Tail of PTY output carried between chunks. A read is not a message
     /// boundary, so a query like `ESC[6n` can arrive as `ESC[` then `6n`.
     query_tail: Vec<u8>,
@@ -31,7 +30,6 @@ impl Term {
             parser: vt100::Parser::new(nz(rows), nz(cols), 8000),
             rows,
             cols,
-            scroll_offset: 0,
             query_tail: Vec::new(),
         }
     }
@@ -66,14 +64,23 @@ impl Term {
             sb.saturating_sub(delta.unsigned_abs() as usize)
         };
         self.parser.screen_mut().set_scrollback(next);
-        self.scroll_offset = next;
     }
 
     pub fn scroll_to_bottom(&mut self) {
-        if self.scroll_offset != 0 {
+        if self.parser.screen().scrollback() != 0 {
             self.parser.screen_mut().set_scrollback(0);
-            self.scroll_offset = 0;
         }
+    }
+
+    /// Always read the position from vt100: `set_size` and incoming output can
+    /// both reset the real scrollback behind our back, and a cached copy would
+    /// then hide the caret long after the view returned to the live screen.
+    pub fn at_bottom(&self) -> bool {
+        self.parser.screen().scrollback() == 0
+    }
+
+    pub fn scroll_offset(&self) -> usize {
+        self.parser.screen().scrollback()
     }
 
     /// Answer the device queries a shell sends while probing the terminal.
@@ -159,11 +166,25 @@ mod tests {
         assert_eq!(t.screen().scrollback(), 0);
         t.scroll(3);
         assert_eq!(t.screen().scrollback(), 3);
-        assert_eq!(t.scroll_offset, 3);
+        assert_eq!(t.scroll_offset(), 3);
+        assert!(!t.at_bottom());
         t.scroll(-2);
         assert_eq!(t.screen().scrollback(), 1);
         t.scroll_to_bottom();
         assert_eq!(t.screen().scrollback(), 0);
+    }
+
+    #[test]
+    fn resize_reflects_vt100_scrollback_reset() {
+        let mut t = Term::new(4, 20);
+        for i in 0..12 {
+            t.process(format!("line {i}\r\n").as_bytes());
+        }
+        t.scroll(3);
+        assert!(!t.at_bottom());
+        t.resize(6, 20);
+        assert_eq!(t.scroll_offset(), 0);
+        assert!(t.at_bottom());
     }
 
     #[test]

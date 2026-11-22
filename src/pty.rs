@@ -8,6 +8,12 @@
 use std::io::{Read, Write};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
+/// 32 KiB per chunk and 512 queued chunks put a ~16 MiB ceiling on output
+/// awaiting the UI thread. The reader blocks past that instead of letting a
+/// command like `yes` grow the queue until the process is OOM-killed.
+const READ_CHUNK: usize = 32 * 1024;
+const READ_QUEUE: usize = 512;
+
 use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 /// A shell we know how to start.
@@ -123,7 +129,9 @@ fn on_path(exe: &str) -> bool {
 
 pub struct PtySession {
     master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    /// Writes go to a dedicated thread: a blocking `write_all` on the UI
+    /// thread would freeze the whole window when the shell stops reading.
+    write_tx: mpsc::Sender<Vec<u8>>,
     child: Box<dyn Child + Send + Sync>,
     rx: Receiver<Vec<u8>>,
     pub pid: Option<u32>,
@@ -175,10 +183,10 @@ impl PtySession {
             .map_err(|e| format!("writer: {e}"))?;
         let pid = child.process_id();
 
-        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(READ_QUEUE);
         let repaint = ctx.clone();
         std::thread::spawn(move || {
-            let mut buf = [0u8; 32 * 1024];
+            let mut buf = [0u8; READ_CHUNK];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
@@ -194,9 +202,21 @@ impl PtySession {
             repaint.request_repaint();
         });
 
+        /* The writer owns the PTY handle; the UI thread only enqueues bytes.
+        Dropping this session drops the sender, which drains and stops it. */
+        let (write_tx, write_rx) = mpsc::channel::<Vec<u8>>();
+        std::thread::spawn(move || {
+            let mut writer = writer;
+            for bytes in write_rx {
+                if writer.write_all(&bytes).is_err() || writer.flush().is_err() {
+                    break;
+                }
+            }
+        });
+
         Ok(Self {
             master: pair.master,
-            writer,
+            write_tx,
             child,
             rx,
             pid,
@@ -223,8 +243,7 @@ impl PtySession {
         if self.exited || bytes.is_empty() {
             return;
         }
-        let _ = self.writer.write_all(bytes);
-        let _ = self.writer.flush();
+        let _ = self.write_tx.send(bytes.to_vec());
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) {

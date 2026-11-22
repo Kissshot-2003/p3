@@ -114,6 +114,7 @@ On startup PSReadLine sends `ESC[6n` (query cursor position) and **blocks until 
 | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | font size / reset |
 | `F5` | restart the session |
 | `Ctrl+Shift+G` | toggle scanlines |
+| `Alt+letter` / `Alt+arrow` | meta escape sequences (readline word movement, etc.) |
 
 Wheel up moves into the back buffer, wheel down returns to the live screen. IME preedit is drawn at the caret and committed text goes straight to the shell.
 
@@ -154,6 +155,8 @@ PS C:\...>
 - The selection only covers what is on screen: scrolling, zooming and resizing all clear it, because cell coordinates stop meaning anything
 - No hyperlink clicking and no mouse reporting (`vim` and `htop` cannot be clicked or scrolled)
 - No barrel distortion: that needs a custom wgpu render pass, which the egui layer cannot do
+- Ctrl+Shift+V is not a paste shortcut; use Ctrl+V
+- If no CJK system font is found, Chinese falls back to VT323 and renders as tofu boxes; no warning is shown
 
 ## Licence
 

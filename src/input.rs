@@ -16,6 +16,15 @@ pub enum Input {
     Paste(Vec<u8>),
 }
 
+/// IME events are incremental: winit only sends `Preedit` when the composition
+/// changes. A per-frame `Option` would therefore erase a preedit as soon as the
+/// user pauses to pick a candidate, so distinguish "no event" from "cleared".
+pub enum ImeUpdate {
+    None,
+    Preedit(String),
+    Clear,
+}
+
 pub struct Pump {
     pub inputs: Vec<Input>,
     pub scroll: i32,
@@ -25,9 +34,8 @@ pub struct Pump {
     pub toggle_scan: bool,
     /// Ctrl+Shift+C: put the selection on the system clipboard.
     pub copy: bool,
-    /// Current IME preedit string, drawn at the caret. `None` when the
-    /// composition is dismissed or committed.
-    pub preedit: Option<String>,
+    /// IME change for this frame, if any.
+    pub ime: ImeUpdate,
 }
 
 /// Take every keyboard event out of the frame so egui's own Tab-focus and
@@ -46,7 +54,7 @@ pub fn pump(ctx: &egui::Context) -> Pump {
         respawn: false,
         toggle_scan: false,
         copy: false,
-        preedit: None,
+        ime: ImeUpdate::None,
     };
 
     ctx.input_mut(|i| {
@@ -66,10 +74,17 @@ pub fn pump(ctx: &egui::Context) -> Pump {
                 shell. Preedit is kept for the renderer instead. */
                 Event::Ime(ImeEvent::Commit(text)) => {
                     push_bytes(&mut out.inputs, text.as_bytes());
-                    out.preedit = None;
+                    out.ime = ImeUpdate::Clear;
                 }
                 Event::Ime(ImeEvent::Preedit { text, .. }) => {
-                    out.preedit = if text.is_empty() { None } else { Some(text) };
+                    out.ime = if text.is_empty() {
+                        ImeUpdate::Clear
+                    } else {
+                        ImeUpdate::Preedit(text)
+                    };
+                }
+                Event::Ime(ImeEvent::DeleteSurrounding { .. }) => {
+                    out.ime = ImeUpdate::Clear;
                 }
                 Event::Ime(_) => {}
                 Event::Key {
@@ -78,29 +93,30 @@ pub fn pump(ctx: &egui::Context) -> Pump {
                     modifiers,
                     ..
                 } => {
-                    if key == Key::F5 {
+                    if key == Key::F5 && modifiers == Modifiers::NONE {
                         out.respawn = true;
                         continue;
                     }
                     /* The README promises PgUp/PgDn for the back buffer, so
-                    these scroll the view here instead of going to the shell. */
-                    if key == Key::PageUp {
+                    these scroll the view here instead of going to the shell.
+                    Leave Ctrl/Alt-modified forms alone: shells use them. */
+                    if key == Key::PageUp && !modifiers.ctrl && !modifiers.alt {
                         out.scroll += 10;
                         continue;
                     }
-                    if key == Key::PageDown {
+                    if key == Key::PageDown && !modifiers.ctrl && !modifiers.alt {
                         out.scroll -= 10;
                         continue;
                     }
                     /* Ctrl+G would otherwise reach the shell as BEL */
-                    if modifiers.ctrl && modifiers.shift && key == Key::G {
+                    if modifiers.ctrl && modifiers.shift && !modifiers.alt && key == Key::G {
                         out.toggle_scan = true;
                         continue;
                     }
                     /* Ctrl+Shift+C never reaches `Event::Copy` (that path needs an
                     unmodified Ctrl), so it still arrives here as a plain key. Take
                     it before the C0 table turns it into another SIGINT. */
-                    if modifiers.ctrl && modifiers.shift && key == Key::C {
+                    if modifiers.ctrl && modifiers.shift && !modifiers.alt && key == Key::C {
                         out.copy = true;
                         continue;
                     }
@@ -175,6 +191,15 @@ pub fn key_bytes(key: Key, m: Modifiers) -> Option<Vec<u8>> {
         return Some(vec![b]);
     }
 
+    /* Alt is the meta key: xterm sends ESC followed by the unmodified key.
+    Without this, readline's Alt+B / Alt+F / Alt+D / Alt+. simply vanish. */
+    if m.alt
+        && !m.ctrl
+        && let Some(bytes) = alt_bytes(key)
+    {
+        return Some(bytes);
+    }
+
     let seq: &[u8] = match key {
         Key::Enter => b"\r",
         Key::Backspace => b"\x7f",
@@ -199,6 +224,51 @@ pub fn key_bytes(key: Key, m: Modifiers) -> Option<Vec<u8>> {
         Key::F10 => b"\x1b[21~",
         Key::F11 => b"\x1b[23~",
         Key::F12 => b"\x1b[24~",
+        _ => return None,
+    };
+    Some(seq.to_vec())
+}
+
+fn alt_bytes(key: Key) -> Option<Vec<u8>> {
+    let seq: &[u8] = match key {
+        Key::ArrowUp => b"\x1b\x1b[A",
+        Key::ArrowDown => b"\x1b\x1b[B",
+        Key::ArrowRight => b"\x1b\x1b[C",
+        Key::ArrowLeft => b"\x1b\x1b[D",
+        Key::Home => b"\x1b\x1b[H",
+        Key::End => b"\x1b\x1b[F",
+        Key::Delete => b"\x1b\x1b[3~",
+        Key::Backspace => return Some(vec![0x1b, 0x7f]),
+        Key::Enter => return Some(vec![0x1b, b'\r']),
+        Key::Tab => return Some(vec![0x1b, b'\t']),
+        Key::Space => return Some(vec![0x1b, b' ']),
+        Key::Period => return Some(vec![0x1b, b'.']),
+        Key::A => return Some(vec![0x1b, b'a']),
+        Key::B => return Some(vec![0x1b, b'b']),
+        Key::C => return Some(vec![0x1b, b'c']),
+        Key::D => return Some(vec![0x1b, b'd']),
+        Key::E => return Some(vec![0x1b, b'e']),
+        Key::F => return Some(vec![0x1b, b'f']),
+        Key::G => return Some(vec![0x1b, b'g']),
+        Key::H => return Some(vec![0x1b, b'h']),
+        Key::I => return Some(vec![0x1b, b'i']),
+        Key::J => return Some(vec![0x1b, b'j']),
+        Key::K => return Some(vec![0x1b, b'k']),
+        Key::L => return Some(vec![0x1b, b'l']),
+        Key::M => return Some(vec![0x1b, b'm']),
+        Key::N => return Some(vec![0x1b, b'n']),
+        Key::O => return Some(vec![0x1b, b'o']),
+        Key::P => return Some(vec![0x1b, b'p']),
+        Key::Q => return Some(vec![0x1b, b'q']),
+        Key::R => return Some(vec![0x1b, b'r']),
+        Key::S => return Some(vec![0x1b, b's']),
+        Key::T => return Some(vec![0x1b, b't']),
+        Key::U => return Some(vec![0x1b, b'u']),
+        Key::V => return Some(vec![0x1b, b'v']),
+        Key::W => return Some(vec![0x1b, b'w']),
+        Key::X => return Some(vec![0x1b, b'x']),
+        Key::Y => return Some(vec![0x1b, b'y']),
+        Key::Z => return Some(vec![0x1b, b'z']),
         _ => return None,
     };
     Some(seq.to_vec())
@@ -247,6 +317,10 @@ mod tests {
 
     fn ctrl(key: Key) -> Option<Vec<u8>> {
         key_bytes(key, Modifiers::CTRL)
+    }
+
+    fn alt(key: Key) -> Option<Vec<u8>> {
+        key_bytes(key, Modifiers::ALT)
     }
 
     #[test]
@@ -303,7 +377,7 @@ mod tests {
         ctx.input_mut(|i| i.events.push(Event::Ime(ImeEvent::Commit("中文".into()))));
         let p = pump(&ctx);
         assert!(matches!(&p.inputs[0], Input::Bytes(b) if b == "中文".as_bytes()));
-        assert!(p.preedit.is_none());
+        assert!(matches!(p.ime, ImeUpdate::Clear));
     }
 
     #[test]
@@ -316,8 +390,15 @@ mod tests {
             }))
         });
         let p = pump(&ctx);
-        assert_eq!(p.preedit.as_deref(), Some("zhong"));
+        assert!(matches!(&p.ime, ImeUpdate::Preedit(s) if s == "zhong"));
         assert!(p.inputs.is_empty());
+    }
+
+    #[test]
+    fn a_frame_without_ime_events_does_not_clear_preedit() {
+        let ctx = egui::Context::default();
+        let p = pump(&ctx);
+        assert!(matches!(p.ime, ImeUpdate::None));
     }
 
     fn page_key(key: Key) -> Pump {
@@ -339,6 +420,14 @@ mod tests {
         assert_eq!(page_key(Key::PageUp).scroll, 10);
         assert_eq!(page_key(Key::PageDown).scroll, -10);
         assert!(page_key(Key::PageUp).inputs.is_empty());
+    }
+
+    #[test]
+    fn alt_sends_meta_escape_sequences() {
+        assert_eq!(alt(Key::B), Some(b"\x1bb".to_vec()));
+        assert_eq!(alt(Key::Period), Some(b"\x1b.".to_vec()));
+        assert_eq!(alt(Key::ArrowUp), Some(b"\x1b\x1b[A".to_vec()));
+        assert_eq!(alt(Key::Backspace), Some(vec![0x1b, 0x7f]));
     }
 
     #[test]

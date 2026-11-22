@@ -148,16 +148,14 @@ impl App {
         }
     }
 
-    /// Ctrl+Shift+C. Returns whether anything actually went to the clipboard, so
-    /// the caller can drop the marks and give the screen back.
-    fn copy_selection(&self, ctx: &egui::Context) -> bool {
-        let Some((a, b)) = self.sel else { return false };
+    /// Ctrl+Shift+C. The marks stay visible so the same text can be copied
+    /// again; a click clears them.
+    fn copy_selection(&self, ctx: &egui::Context) {
+        let Some((a, b)) = self.sel else { return };
         let text = selection_text(self.term.screen(), a, b);
-        if text.is_empty() {
-            return false;
+        if !text.is_empty() {
+            ctx.copy_text(text);
         }
-        ctx.copy_text(text);
-        true
     }
 
     /* ------------------------------------------------------------------ hud */
@@ -529,7 +527,7 @@ impl App {
         }
 
         /* caret: only at the live bottom, and only when the shell shows it */
-        if self.term.scroll_offset == 0 && !screen.hide_cursor() {
+        if self.term.at_bottom() && !screen.hide_cursor() {
             let (cr, cc) = screen.cursor_position();
             if cr < rows && cc < cols {
                 painter.rect_filled(
@@ -550,7 +548,7 @@ impl App {
         to be drawn by the terminal at the caret. Without this, composing text
         is invisible until the final commit jumps onto the screen. */
         if let Some(text) = self.preedit.as_deref()
-            && self.term.scroll_offset == 0
+            && self.term.at_bottom()
             && !screen.hide_cursor()
         {
             let (cr, cc) = screen.cursor_position();
@@ -691,7 +689,7 @@ impl App {
             inner.height(),
             screen.cursor_position(),
             screen.hide_cursor(),
-            self.term.scroll_offset,
+            self.term.scroll_offset(),
             self.pty.as_ref().map(|p| p.exited).unwrap_or(true),
             self.rx_total,
             self.pty.as_ref().and_then(|p| p.pid),
@@ -797,7 +795,9 @@ fn selection_text(screen: &vt100::Screen, a: (u16, u16), b: (u16, u16)) -> Strin
             line.push_str(if text.is_empty() { " " } else { text });
         }
         out.push_str(line.trim_end());
-        if r != end.0 {
+        /* A soft-wrapped row is a continuation of the same logical line; a
+        newline here would split a long command in the middle. */
+        if r != end.0 && !screen.row_wrapped(r) {
             out.push('\n');
         }
     }
@@ -1152,7 +1152,11 @@ impl eframe::App for App {
         self.pump_pty();
 
         let pump = input::pump(&ctx);
-        self.preedit = pump.preedit;
+        match pump.ime {
+            input::ImeUpdate::Preedit(text) => self.preedit = Some(text),
+            input::ImeUpdate::Clear => self.preedit = None,
+            input::ImeUpdate::None => {}
+        }
         let before = self.font_size;
         match pump.zoom {
             1 => self.font_size = (self.font_size + 2.0).min(32.0),
@@ -1193,8 +1197,8 @@ impl eframe::App for App {
             self.sel = None;
             self.preedit = None;
         }
-        if pump.copy && self.copy_selection(&ctx) {
-            self.sel = None;
+        if pump.copy {
+            self.copy_selection(&ctx);
         }
 
         Self::resize_edges(&ctx);
@@ -1259,6 +1263,14 @@ mod tests {
         t.process(b"ab  cd\r\nx");
         assert_eq!(selection_text(t.screen(), (0, 0), (0, 5)), "ab  cd");
         assert_eq!(selection_text(t.screen(), (0, 0), (1, 0)), "ab  cd\nx");
+    }
+
+    #[test]
+    fn copy_keeps_soft_wrapped_lines_together() {
+        let mut t = Term::new(4, 8);
+        t.process(b"abcdefghijkl");
+        assert!(t.screen().row_wrapped(0));
+        assert_eq!(selection_text(t.screen(), (0, 0), (1, 3)), "abcdefghijkl");
     }
 
     #[test]
