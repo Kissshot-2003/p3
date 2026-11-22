@@ -60,7 +60,7 @@ Painting amber text on a dark background is not a CRT. There has to be a **machi
 | Field drift | A translucent bright band creeping down the screen, one pass every 13 seconds |
 | Vignette | Vertex gradients on all four sides, so the corners stack up darker on their own |
 | Glass reflection | A very faint warm-white gradient in the top-left corner |
-| Brightness jitter | Two sine waves at different frequencies for ±2% phosphor wobble, plus a 2px horizontal slip every 9 seconds |
+| Brightness jitter | Two sine waves at different frequencies for ±2.6% phosphor wobble, plus a ~2.5px horizontal slip every 9.3 seconds |
 | Power lamp | A small amber lamp in the bottom-right corner, breathing slowly |
 | Power-on | The picture opens from a single horizontal line, leaving a bright trace at the edge |
 

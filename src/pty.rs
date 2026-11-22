@@ -20,6 +20,7 @@ pub struct ShellSpec {
 /// prediction dim so it reads as a suggestion instead of typed input.
 /// Wrapped in try/catch: Windows PowerShell 5.1 ships an older PSReadLine
 /// without these switches and must keep booting.
+#[cfg(windows)]
 const PS_INIT: &str = concat!(
     "try{",
     "Set-PSReadLineOption -PredictionSource History -ErrorAction Stop;",
@@ -31,6 +32,7 @@ const PS_INIT: &str = concat!(
 /// PowerShell accepts a UTF-16LE script as base64, which sidesteps Windows
 /// command-line quoting entirely — the plain `-Command` form loses the inner
 /// quotes of the colour hashtable and the shell then starts up mute.
+#[cfg(windows)]
 fn encoded_command(script: &str) -> String {
     let bytes: Vec<u8> = script
         .encode_utf16()
@@ -39,6 +41,7 @@ fn encoded_command(script: &str) -> String {
     base64(&bytes)
 }
 
+#[cfg(windows)]
 fn base64(bytes: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
@@ -63,6 +66,7 @@ fn base64(bytes: &[u8]) -> String {
     out
 }
 
+#[cfg(windows)]
 fn powershell_args() -> Vec<String> {
     vec![
         "-NoLogo".into(),

@@ -106,8 +106,18 @@ pub fn install_fonts(ctx: &egui::Context) {
     const CJK: [&str; 2] = ["C:/Windows/Fonts/simhei.ttf", "C:/Windows/Fonts/msyh.ttc"];
     #[cfg(target_os = "macos")]
     const CJK: [&str; 1] = ["/System/Library/Fonts/Hiragino Sans GB.ttc"];
+    /* Linux puts the same font in a different place per distribution; try the
+    common ones before giving up on CJK entirely. */
     #[cfg(all(unix, not(target_os = "macos")))]
-    const CJK: [&str; 1] = ["/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc"];
+    const CJK: [&str; 3] = [
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", // Debian / Ubuntu
+        "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",      // Arch
+        "/usr/share/fonts/google-noto-sans-cjk-fonts/NotoSansCJK-Regular.ttc", // Fedora
+    ];
+    /* Targets without a system font directory (e.g. wasm) still need CJK to
+    exist so the loop below compiles. */
+    #[cfg(not(any(windows, target_os = "macos", unix)))]
+    const CJK: [&str; 0] = [];
 
     let mut chain: Vec<String> = vec!["vt323".to_owned()];
     for (i, path) in CJK.iter().enumerate() {
