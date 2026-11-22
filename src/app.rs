@@ -44,6 +44,8 @@ pub struct App {
     /// anchor is where the drag started, the head follows the pointer, so a
     /// selection can run backwards. Only screen cells, not scrollback.
     sel: Option<((u16, u16), (u16, u16))>,
+    /// Text being composed by the IME, drawn at the caret until committed.
+    preedit: Option<String>,
 }
 
 impl App {
@@ -86,6 +88,7 @@ impl App {
             shot: std::env::var("P3_SHOT").ok(),
             shot_fired: false,
             sel: None,
+            preedit: None,
         }
     }
 
@@ -226,38 +229,59 @@ impl App {
     /// The OS title bar is gone, so the resize borders have to be rebuilt by
     /// hand: a thin hot zone along each edge that starts an OS-level resize.
     fn resize_edges(ctx: &egui::Context) {
-        if ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
-            return;
-        }
-        let rect = ctx.viewport_rect();
-        let Some(p) = ctx.pointer_latest_pos() else {
-            return;
+        /* egui's cursor icon is sticky between frames: if we stop setting it
+        when the pointer leaves the border, the resize arrow stays on screen
+        until some other widget happens to overwrite it. So every path through
+        here must set an icon, including the "not on an edge" one. */
+        let edge = if ctx.input(|i| i.viewport().maximized.unwrap_or(false)) {
+            None
+        } else {
+            let rect = ctx.viewport_rect();
+            ctx.pointer_latest_pos().and_then(|p| {
+                if !rect.contains(p) {
+                    return None;
+                }
+                let w = p.x - rect.left() < EDGE_HIT;
+                let e = rect.right() - p.x < EDGE_HIT;
+                let n = p.y - rect.top() < EDGE_HIT;
+                let s = rect.bottom() - p.y < EDGE_HIT;
+                match (n, s, w, e) {
+                    (true, _, true, _) => {
+                        Some((egui::ResizeDirection::NorthWest, CursorIcon::ResizeNwSe))
+                    }
+                    (true, _, _, true) => {
+                        Some((egui::ResizeDirection::NorthEast, CursorIcon::ResizeNeSw))
+                    }
+                    (_, true, true, _) => {
+                        Some((egui::ResizeDirection::SouthWest, CursorIcon::ResizeNeSw))
+                    }
+                    (_, true, _, true) => {
+                        Some((egui::ResizeDirection::SouthEast, CursorIcon::ResizeNwSe))
+                    }
+                    (true, _, _, _) => {
+                        Some((egui::ResizeDirection::North, CursorIcon::ResizeVertical))
+                    }
+                    (_, true, _, _) => {
+                        Some((egui::ResizeDirection::South, CursorIcon::ResizeVertical))
+                    }
+                    (_, _, true, _) => {
+                        Some((egui::ResizeDirection::West, CursorIcon::ResizeHorizontal))
+                    }
+                    (_, _, _, true) => {
+                        Some((egui::ResizeDirection::East, CursorIcon::ResizeHorizontal))
+                    }
+                    _ => None,
+                }
+            })
         };
-        if !rect.contains(p) {
-            return;
-        }
-        let w = p.x - rect.left() < EDGE_HIT;
-        let e = rect.right() - p.x < EDGE_HIT;
-        let n = p.y - rect.top() < EDGE_HIT;
-        let s = rect.bottom() - p.y < EDGE_HIT;
-        if !(w || e || n || s) {
-            return;
-        }
 
-        let (dir, cursor) = match (n, s, w, e) {
-            (true, _, true, _) => (egui::ResizeDirection::NorthWest, CursorIcon::ResizeNwSe),
-            (true, _, _, true) => (egui::ResizeDirection::NorthEast, CursorIcon::ResizeNeSw),
-            (_, true, true, _) => (egui::ResizeDirection::SouthWest, CursorIcon::ResizeNeSw),
-            (_, true, _, true) => (egui::ResizeDirection::SouthEast, CursorIcon::ResizeNwSe),
-            (true, _, _, _) => (egui::ResizeDirection::North, CursorIcon::ResizeVertical),
-            (_, true, _, _) => (egui::ResizeDirection::South, CursorIcon::ResizeVertical),
-            (_, _, true, _) => (egui::ResizeDirection::West, CursorIcon::ResizeHorizontal),
-            (_, _, _, true) => (egui::ResizeDirection::East, CursorIcon::ResizeHorizontal),
-            _ => return,
-        };
-        ctx.set_cursor_icon(cursor);
-        if ctx.input(|i| i.pointer.primary_pressed()) {
-            ctx.send_viewport_cmd(ViewportCommand::BeginResize(dir));
+        if let Some((dir, cursor)) = edge {
+            ctx.set_cursor_icon(cursor);
+            if ctx.input(|i| i.pointer.primary_pressed()) {
+                ctx.send_viewport_cmd(ViewportCommand::BeginResize(dir));
+            }
+        } else {
+            ctx.set_cursor_icon(CursorIcon::Default);
         }
     }
 
@@ -352,10 +376,21 @@ impl App {
         let cell_at = |p: egui::Pos2| -> (u16, u16) {
             let r = ((p.y - inner.top()) / rh).floor();
             let c = ((p.x - inner.left()) / cw).floor();
-            (
-                r.clamp(0.0, rows.saturating_sub(1) as f32) as u16,
-                c.clamp(0.0, cols.saturating_sub(1) as f32) as u16,
-            )
+            let r = r.clamp(0.0, rows.saturating_sub(1) as f32) as u16;
+            let c = c.clamp(0.0, cols.saturating_sub(1) as f32) as u16;
+            /* A Han glyph owns two cells but stores its text only in the left
+            one. Ending a drag on the right half would drop the whole character
+            from both the highlight and the copied text. */
+            if self
+                .term
+                .screen()
+                .cell(r, c)
+                .is_some_and(|cell| cell.is_wide_continuation())
+            {
+                (r, c.saturating_sub(1))
+            } else {
+                (r, c)
+            }
         };
         if resp.drag_started() {
             if let Some(p) = resp.interact_pointer_pos() {
@@ -507,6 +542,31 @@ impl App {
                     ),
                     CornerRadius::ZERO,
                     theme::AMBER.gamma_multiply(0.55 * flick),
+                );
+            }
+        }
+
+        /* The OS draws the IME candidate list, but the in-progress string has
+        to be drawn by the terminal at the caret. Without this, composing text
+        is invisible until the final commit jumps onto the screen. */
+        if let Some(text) = self.preedit.as_deref()
+            && self.term.scroll_offset == 0
+            && !screen.hide_cursor()
+        {
+            let (cr, cc) = screen.cursor_position();
+            if cr < rows && cc < cols {
+                let x = inner.left() + cc as f32 * cw + dx;
+                let y = inner.top() + cr as f32 * rh;
+                let galley = painter.layout_job(job(text, &font, theme::AMBER_HOT, 0.0));
+                let top = pos2(x, y + (rh - galley.size().y) * 0.5);
+                painter.galley_with_override_text_color(top, galley.clone(), theme::AMBER_HOT);
+                let underline_y = y + rh - 2.0;
+                painter.line_segment(
+                    [
+                        pos2(x, underline_y),
+                        pos2(x + galley.size().x.max(cw), underline_y),
+                    ],
+                    Stroke::new(1.0, theme::AMBER_HOT),
                 );
             }
         }
@@ -1092,6 +1152,7 @@ impl eframe::App for App {
         self.pump_pty();
 
         let pump = input::pump(&ctx);
+        self.preedit = pump.preedit;
         let before = self.font_size;
         match pump.zoom {
             1 => self.font_size = (self.font_size + 2.0).min(32.0),
@@ -1130,6 +1191,7 @@ impl eframe::App for App {
         if pump.respawn {
             self.respawn(&ctx);
             self.sel = None;
+            self.preedit = None;
         }
         if pump.copy && self.copy_selection(&ctx) {
             self.sel = None;

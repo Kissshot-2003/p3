@@ -55,10 +55,16 @@ impl Term {
         self.parser.screen()
     }
 
-    /// Wheel input. Positive delta scrolls into the history; 0 returns to live.
+    /// Scroll the view. Positive delta moves into the history (wheel up),
+    /// negative returns toward the live screen. vt100 counts `scrollback` up
+    /// from the live screen, so it has to be added, not subtracted.
     pub fn scroll(&mut self, delta: i32) {
         let sb = self.parser.screen().scrollback();
-        let next = (sb as i32 - delta).max(0) as usize;
+        let next = if delta >= 0 {
+            sb.saturating_add(delta as usize)
+        } else {
+            sb.saturating_sub(delta.unsigned_abs() as usize)
+        };
         self.parser.screen_mut().set_scrollback(next);
         self.scroll_offset = next;
     }
@@ -142,6 +148,22 @@ mod tests {
             }
         }
         if out.is_empty() { None } else { Some(out) }
+    }
+
+    #[test]
+    fn wheel_up_moves_into_history_and_down_returns() {
+        let mut t = Term::new(4, 20);
+        for i in 0..12 {
+            t.process(format!("line {i}\r\n").as_bytes());
+        }
+        assert_eq!(t.screen().scrollback(), 0);
+        t.scroll(3);
+        assert_eq!(t.screen().scrollback(), 3);
+        assert_eq!(t.scroll_offset, 3);
+        t.scroll(-2);
+        assert_eq!(t.screen().scrollback(), 1);
+        t.scroll_to_bottom();
+        assert_eq!(t.screen().scrollback(), 0);
     }
 
     #[test]

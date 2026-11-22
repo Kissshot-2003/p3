@@ -115,6 +115,8 @@ On startup PSReadLine sends `ESC[6n` (query cursor position) and **blocks until 
 | `F5` | restart the session |
 | `Ctrl+Shift+G` | toggle scanlines |
 
+Wheel up moves into the back buffer, wheel down returns to the live screen. IME preedit is drawn at the caret and committed text goes straight to the shell.
+
 ## The window
 
 The system title bar is gone, so the app takes over these:

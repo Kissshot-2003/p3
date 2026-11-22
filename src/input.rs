@@ -6,7 +6,7 @@
 //! history prediction, syntax highlighting and menu completion work in the GUI
 //! without writing any of them.
 
-use eframe::egui::{self, Event, Key, Modifiers};
+use eframe::egui::{self, Event, ImeEvent, Key, Modifiers};
 
 /// One input event, in the order egui delivered it. Paste is a separate variant
 /// because it may need bracketed-paste markers wrapped around it by the caller,
@@ -25,6 +25,9 @@ pub struct Pump {
     pub toggle_scan: bool,
     /// Ctrl+Shift+C: put the selection on the system clipboard.
     pub copy: bool,
+    /// Current IME preedit string, drawn at the caret. `None` when the
+    /// composition is dismissed or committed.
+    pub preedit: Option<String>,
 }
 
 /// Take every keyboard event out of the frame so egui's own Tab-focus and
@@ -43,6 +46,7 @@ pub fn pump(ctx: &egui::Context) -> Pump {
         respawn: false,
         toggle_scan: false,
         copy: false,
+        preedit: None,
     };
 
     ctx.input_mut(|i| {
@@ -56,6 +60,18 @@ pub fn pump(ctx: &egui::Context) -> Pump {
                 /* egui ate the keystroke, so hand the shell what xterm would have sent */
                 Event::Copy => push_bytes(&mut out.inputs, &[0x03]),
                 Event::Cut => push_bytes(&mut out.inputs, &[0x18]),
+                /* egui only forwards IME events to TextEdit widgets, of which a
+                terminal has none. Without this branch the composed text would
+                be silently dropped and Chinese input would never reach the
+                shell. Preedit is kept for the renderer instead. */
+                Event::Ime(ImeEvent::Commit(text)) => {
+                    push_bytes(&mut out.inputs, text.as_bytes());
+                    out.preedit = None;
+                }
+                Event::Ime(ImeEvent::Preedit { text, .. }) => {
+                    out.preedit = if text.is_empty() { None } else { Some(text) };
+                }
+                Event::Ime(_) => {}
                 Event::Key {
                     key,
                     pressed: true,
@@ -64,6 +80,16 @@ pub fn pump(ctx: &egui::Context) -> Pump {
                 } => {
                     if key == Key::F5 {
                         out.respawn = true;
+                        continue;
+                    }
+                    /* The README promises PgUp/PgDn for the back buffer, so
+                    these scroll the view here instead of going to the shell. */
+                    if key == Key::PageUp {
+                        out.scroll += 10;
+                        continue;
+                    }
+                    if key == Key::PageDown {
+                        out.scroll -= 10;
                         continue;
                     }
                     /* Ctrl+G would otherwise reach the shell as BEL */
@@ -269,6 +295,50 @@ mod tests {
         assert_eq!(ctrl(Key::C), Some(vec![0x03]));
         /* a modified arrow has no C0 mapping, so the plain CSI form goes through */
         assert_eq!(ctrl(Key::ArrowRight), Some(b"\x1b[C".to_vec()));
+    }
+
+    #[test]
+    fn ime_commit_reaches_the_shell() {
+        let ctx = egui::Context::default();
+        ctx.input_mut(|i| i.events.push(Event::Ime(ImeEvent::Commit("中文".into()))));
+        let p = pump(&ctx);
+        assert!(matches!(&p.inputs[0], Input::Bytes(b) if b == "中文".as_bytes()));
+        assert!(p.preedit.is_none());
+    }
+
+    #[test]
+    fn preedit_is_kept_for_the_renderer_not_the_shell() {
+        let ctx = egui::Context::default();
+        ctx.input_mut(|i| {
+            i.events.push(Event::Ime(ImeEvent::Preedit {
+                text: "zhong".into(),
+                active_range_chars: None,
+            }))
+        });
+        let p = pump(&ctx);
+        assert_eq!(p.preedit.as_deref(), Some("zhong"));
+        assert!(p.inputs.is_empty());
+    }
+
+    fn page_key(key: Key) -> Pump {
+        let ctx = egui::Context::default();
+        ctx.input_mut(|i| {
+            i.events.push(Event::Key {
+                key,
+                physical_key: None,
+                pressed: true,
+                repeat: false,
+                modifiers: Modifiers::NONE,
+            })
+        });
+        pump(&ctx)
+    }
+
+    #[test]
+    fn page_keys_scroll_the_back_buffer() {
+        assert_eq!(page_key(Key::PageUp).scroll, 10);
+        assert_eq!(page_key(Key::PageDown).scroll, -10);
+        assert!(page_key(Key::PageUp).inputs.is_empty());
     }
 
     #[test]
