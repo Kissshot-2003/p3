@@ -14,7 +14,7 @@ cargo run --release
 
 Output: `target/release/p3.exe`, a single file with no runtime dependency.
 
-Requires Rust 1.85+ (`edition = "2024"`). Works out of the box on Windows (ConPTY); Linux and macOS go through `openpty` but are not fully tested.
+Requires Rust 1.95+ (the MSRV of eframe 0.37; this crate itself uses `edition = "2024"` and would build on 1.85, but the dependency chain needs a newer compiler). Works out of the box on Windows (ConPTY); Linux and macOS go through `openpty` but are not fully tested.
 
 ## Why native, not a web page
 
@@ -60,7 +60,7 @@ Painting amber text on a dark background is not a CRT. There has to be a **machi
 | Field drift | A translucent bright band creeping down the screen, one pass every 13 seconds |
 | Vignette | Vertex gradients on all four sides, so the corners stack up darker on their own |
 | Glass reflection | A very faint warm-white gradient in the top-left corner |
-| Brightness jitter | Two sine waves at different frequencies for ±2% phosphor wobble, plus a 2px horizontal slip every 9 seconds |
+| Brightness jitter | Two sine waves at different frequencies for ±2.6% phosphor wobble, plus a ~2.5px horizontal slip every 9.3 seconds |
 | Power lamp | A small amber lamp in the bottom-right corner, breathing slowly |
 | Power-on | The picture opens from a single horizontal line, leaving a bright trace at the edge |
 
@@ -91,7 +91,7 @@ It only shows up on a `wide → space → narrow` boundary, because any other ca
 
 `egui-winit` rewrites `Ctrl+C` / `Ctrl+X` / `Ctrl+V` into `Event::Copy` / `Cut` / `Paste` **before** handing events to the app — a plain `Event::Key` for them never exists. A terminal that only matches on `Event::Key` does nothing when you press `Ctrl+C`, and looks broken.
 
-So `input.rs` translates those three events back into bytes: `Copy` → `0x03` (SIGINT), `Cut` → `0x18`, `Paste` → written straight to the PTY.
+So `input.rs` translates those three events back into bytes: `Copy` → `0x03` (SIGINT), `Cut` → `0x18`, `Paste` → written to the PTY, wrapped in `ESC[200~` / `ESC[201~` when the shell enabled bracketed paste.
 
 Conversely, because that copy path requires Ctrl **without** Shift, `Ctrl+Shift+C` still arrives as an ordinary key and can be intercepted before the C0 table turns it into yet another SIGINT.
 
@@ -109,11 +109,14 @@ On startup PSReadLine sends `ESC[6n` (query cursor position) and **blocks until 
 | `Ctrl+C` | interrupt (sends SIGINT, does not copy) |
 | Drag with the mouse | select text, continuously across lines |
 | `Ctrl+Shift+C` | copy the selection |
-| `Ctrl+V` | paste (multi-line goes through as-is; the shell decides) |
+| `Ctrl+V` | paste (wrapped in bracketed-paste markers when the shell enabled that mode, so multi-line text is not executed line by line) |
 | `PgUp` / `PgDn` | scroll the back buffer |
 | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | font size / reset |
 | `F5` | restart the session |
 | `Ctrl+Shift+G` | toggle scanlines |
+| `Alt+letter` / `Alt+arrow` | meta escape sequences (readline word movement, etc.) |
+
+Wheel up moves into the back buffer, wheel down returns to the live screen. IME preedit is drawn at the caret and committed text goes straight to the shell.
 
 ## The window
 
@@ -152,6 +155,8 @@ PS C:\...>
 - The selection only covers what is on screen: scrolling, zooming and resizing all clear it, because cell coordinates stop meaning anything
 - No hyperlink clicking and no mouse reporting (`vim` and `htop` cannot be clicked or scrolled)
 - No barrel distortion: that needs a custom wgpu render pass, which the egui layer cannot do
+- Ctrl+Shift+V is not a paste shortcut; use Ctrl+V
+- If no CJK system font is found, Chinese falls back to VT323 and renders as tofu boxes; no warning is shown
 
 ## Licence
 

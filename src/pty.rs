@@ -8,7 +8,13 @@
 use std::io::{Read, Write};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+/// 32 KiB per chunk and 512 queued chunks put a ~16 MiB ceiling on output
+/// awaiting the UI thread. The reader blocks past that instead of letting a
+/// command like `yes` grow the queue until the process is OOM-killed.
+const READ_CHUNK: usize = 32 * 1024;
+const READ_QUEUE: usize = 512;
+
+use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 /// A shell we know how to start.
 pub struct ShellSpec {
@@ -20,6 +26,7 @@ pub struct ShellSpec {
 /// prediction dim so it reads as a suggestion instead of typed input.
 /// Wrapped in try/catch: Windows PowerShell 5.1 ships an older PSReadLine
 /// without these switches and must keep booting.
+#[cfg(windows)]
 const PS_INIT: &str = concat!(
     "try{",
     "Set-PSReadLineOption -PredictionSource History -ErrorAction Stop;",
@@ -31,11 +38,16 @@ const PS_INIT: &str = concat!(
 /// PowerShell accepts a UTF-16LE script as base64, which sidesteps Windows
 /// command-line quoting entirely — the plain `-Command` form loses the inner
 /// quotes of the colour hashtable and the shell then starts up mute.
+#[cfg(windows)]
 fn encoded_command(script: &str) -> String {
-    let bytes: Vec<u8> = script.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+    let bytes: Vec<u8> = script
+        .encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
     base64(&bytes)
 }
 
+#[cfg(windows)]
 fn base64(bytes: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
@@ -46,12 +58,21 @@ fn base64(bytes: &[u8]) -> String {
         let n = (b0 << 16) | (b1 << 8) | b2;
         out.push(T[(n >> 18) as usize & 63] as char);
         out.push(T[(n >> 12) as usize & 63] as char);
-        out.push(if c.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
-        out.push(if c.len() > 2 { T[n as usize & 63] as char } else { '=' });
+        out.push(if c.len() > 1 {
+            T[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if c.len() > 2 {
+            T[n as usize & 63] as char
+        } else {
+            '='
+        });
     }
     out
 }
 
+#[cfg(windows)]
 fn powershell_args() -> Vec<String> {
     vec![
         "-NoLogo".into(),
@@ -63,10 +84,13 @@ fn powershell_args() -> Vec<String> {
 
 impl ShellSpec {
     pub fn detect() -> Self {
-        if let Ok(p) = std::env::var("P3_SHELL") {
-            if !p.trim().is_empty() {
-                return Self { program: p, args: Vec::new() };
-            }
+        if let Ok(p) = std::env::var("P3_SHELL")
+            && !p.trim().is_empty()
+        {
+            return Self {
+                program: p,
+                args: Vec::new(),
+            };
         }
         #[cfg(windows)]
         {
@@ -84,7 +108,10 @@ impl ShellSpec {
         #[cfg(not(windows))]
         {
             let sh = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into());
-            Self { program: sh, args: vec!["-l".into()] }
+            Self {
+                program: sh,
+                args: vec!["-l".into()],
+            }
         }
     }
 }
@@ -102,7 +129,9 @@ fn on_path(exe: &str) -> bool {
 
 pub struct PtySession {
     master: Box<dyn MasterPty + Send>,
-    writer: Box<dyn Write + Send>,
+    /// Writes go to a dedicated thread: a blocking `write_all` on the UI
+    /// thread would freeze the whole window when the shell stops reading.
+    write_tx: mpsc::Sender<Vec<u8>>,
     child: Box<dyn Child + Send + Sync>,
     rx: Receiver<Vec<u8>>,
     pub pid: Option<u32>,
@@ -120,7 +149,12 @@ impl PtySession {
     ) -> Result<Self, String> {
         let pty = native_pty_system();
         let pair = pty
-            .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .openpty(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .map_err(|e| format!("openpty: {e}"))?;
 
         let mut cmd = CommandBuilder::new(&spec.program);
@@ -139,14 +173,20 @@ impl PtySession {
             .map_err(|e| format!("启动 {} 失败: {e}", spec.program))?;
         drop(pair.slave);
 
-        let mut reader = pair.master.try_clone_reader().map_err(|e| format!("reader: {e}"))?;
-        let writer = pair.master.take_writer().map_err(|e| format!("writer: {e}"))?;
+        let mut reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|e| format!("reader: {e}"))?;
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| format!("writer: {e}"))?;
         let pid = child.process_id();
 
-        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let (tx, rx) = mpsc::sync_channel::<Vec<u8>>(READ_QUEUE);
         let repaint = ctx.clone();
         std::thread::spawn(move || {
-            let mut buf = [0u8; 32 * 1024];
+            let mut buf = [0u8; READ_CHUNK];
             loop {
                 match reader.read(&mut buf) {
                     Ok(0) => break,
@@ -162,9 +202,21 @@ impl PtySession {
             repaint.request_repaint();
         });
 
+        /* The writer owns the PTY handle; the UI thread only enqueues bytes.
+        Dropping this session drops the sender, which drains and stops it. */
+        let (write_tx, write_rx) = mpsc::channel::<Vec<u8>>();
+        std::thread::spawn(move || {
+            let mut writer = writer;
+            for bytes in write_rx {
+                if writer.write_all(&bytes).is_err() || writer.flush().is_err() {
+                    break;
+                }
+            }
+        });
+
         Ok(Self {
             master: pair.master,
-            writer,
+            write_tx,
             child,
             rx,
             pid,
@@ -191,8 +243,7 @@ impl PtySession {
         if self.exited || bytes.is_empty() {
             return;
         }
-        let _ = self.writer.write_all(bytes);
-        let _ = self.writer.flush();
+        let _ = self.write_tx.send(bytes.to_vec());
     }
 
     pub fn resize(&mut self, rows: u16, cols: u16) {
