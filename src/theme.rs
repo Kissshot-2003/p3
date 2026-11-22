@@ -111,7 +111,9 @@ pub fn install_fonts(ctx: &egui::Context) {
 
     let mut chain: Vec<String> = vec!["vt323".to_owned()];
     for (i, path) in CJK.iter().enumerate() {
-        let Ok(bytes) = std::fs::read(path) else { continue };
+        let Ok(bytes) = std::fs::read(path) else {
+            continue;
+        };
         let name = format!("cjk{i}");
         fonts
             .font_data

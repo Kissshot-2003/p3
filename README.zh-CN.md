@@ -14,7 +14,7 @@ cargo run --release
 
 产物：`target/release/p3.exe`（单文件，无需运行时）。
 
-需要 Rust 1.85+（`edition = "2024"`）。Windows 开箱可用（ConPTY）；Linux / macOS 走 `openpty`，未做完整验证。
+需要 Rust 1.95+（eframe 0.37 的 MSRV；本 crate 自身用 `edition = "2024"`，理论上 1.85 即可，但依赖链要求更高）。Windows 开箱可用（ConPTY）；Linux / macOS 走 `openpty`，未做完整验证。
 
 ## 为什么是原生而不是网页
 
@@ -98,7 +98,7 @@ src/theme.rs   琥珀色板、ANSI 折叠、字体
 只写 `Event::Key` 分支的终端，`Ctrl+C` 按下去毫无反应，像坏了。
 
 所以 `input.rs` 里这三个事件要自己翻译回字节：`Copy` → `0x03`（SIGINT）、
-`Cut` → `0x18`、`Paste` → 直接写进 PTY。
+`Cut` → `0x18`、`Paste` → 按 shell 当前是否开启括号粘贴模式决定是否包上 `ESC[200~` / `ESC[201~` 再写进 PTY。
 
 反过来，因为那条复制路径要求 Ctrl **不带** Shift，`Ctrl+Shift+C` 仍然是普通按键，
 能在 `key_bytes` 的 C0 表把它变成又一个 SIGINT 之前截下来。
@@ -117,7 +117,7 @@ PSReadLine 启动时会发 `ESC[6n`（查询光标位置）并**阻塞等待回�
 | `Ctrl+C` | 中断（发 SIGINT，不是复制） |
 | 鼠标拖选 | 选中文本，跨行连续选择 |
 | `Ctrl+Shift+C` | 复制选区到剪贴板 |
-| `Ctrl+V` | 粘贴（多行也照发，shell 自己处理） |
+| `Ctrl+V` | 粘贴（shell 开启括号粘贴时会包上边界标记，多行不会被逐行执行） |
 | `PgUp` / `PgDn` | 翻看回滚缓冲 |
 | `Ctrl+=` / `Ctrl+-` / `Ctrl+0` | 字号 / 复位 |
 | `F5` | 重开会话 |

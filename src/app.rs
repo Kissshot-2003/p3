@@ -7,8 +7,8 @@
 use std::time::{Duration, Instant};
 
 use eframe::egui::{
-    self, Color32, CornerRadius, CursorIcon, FontFamily, FontId, Id, LayerId, Margin,
-    Order, Rect, Sense, Shape, Stroke, StrokeKind, ViewportCommand, pos2, vec2,
+    self, Color32, CornerRadius, CursorIcon, FontFamily, FontId, Id, LayerId, Margin, Order, Rect,
+    Sense, Shape, Stroke, StrokeKind, ViewportCommand, pos2, vec2,
 };
 
 use crate::input;
@@ -90,7 +90,14 @@ impl App {
     }
 
     fn pump_pty(&mut self) {
-        let Self { pty, term, status, rx_total, last_chunk, .. } = self;
+        let Self {
+            pty,
+            term,
+            status,
+            rx_total,
+            last_chunk,
+            ..
+        } = self;
         let Some(p) = pty.as_mut() else { return };
 
         let mut got = 0usize;
@@ -122,7 +129,13 @@ impl App {
             p.kill();
         }
         let cwd = self.cwd.clone();
-        match PtySession::spawn(ctx, ShellSpec::detect(), self.term.rows, self.term.cols, &cwd) {
+        match PtySession::spawn(
+            ctx,
+            ShellSpec::detect(),
+            self.term.rows,
+            self.term.cols,
+            &cwd,
+        ) {
             Ok(p) => {
                 self.pty = Some(p);
                 self.status.clear();
@@ -155,12 +168,18 @@ impl App {
             .frame(
                 egui::Frame::NONE
                     .fill(theme::CABINET_TOP)
-                    .inner_margin(Margin { left: 6, right: 6, top: 3, bottom: 3 }),
+                    .inner_margin(Margin {
+                        left: 6,
+                        right: 6,
+                        top: 3,
+                        bottom: 3,
+                    }),
             )
             /* no hairline under the plate: the cabinet is one piece of plastic */
             .show_separator_line(false)
             .show(ui, |ui| {
-                let bar = Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), BAR_H - 6.0));
+                let bar =
+                    Rect::from_min_size(ui.cursor().min, vec2(ui.available_width(), BAR_H - 6.0));
                 let drag = ui.interact(bar, Id::unique("amber.titlebar"), Sense::click_and_drag());
 
                 ui.horizontal(|ui| {
@@ -211,7 +230,9 @@ impl App {
             return;
         }
         let rect = ctx.viewport_rect();
-        let Some(p) = ctx.pointer_latest_pos() else { return };
+        let Some(p) = ctx.pointer_latest_pos() else {
+            return;
+        };
         if !rect.contains(p) {
             return;
         }
@@ -243,12 +264,14 @@ impl App {
     /// `P3_SHOT=<file.bmp>` grabs one frame and quits. Lets the renderer be
     /// checked without a display in front of you.
     fn grab(&mut self, ctx: &egui::Context) {
-        let Some(path) = self.shot.clone() else { return };
+        let Some(path) = self.shot.clone() else {
+            return;
+        };
         if !self.shot_fired && self.started.elapsed().as_millis() > 1500 {
             self.shot_fired = true;
-            ctx.send_viewport_cmd(ViewportCommand::Screenshot(
-                egui::ScreenshotCallback::new(move |img| write_bmp(&path, &img)),
-            ));
+            ctx.send_viewport_cmd(ViewportCommand::Screenshot(egui::ScreenshotCallback::new(
+                move |img| write_bmp(&path, &img),
+            )));
         }
         if self.shot_fired {
             let tmp = format!("{}.tmp", self.shot.as_deref().unwrap_or_default());
@@ -281,7 +304,6 @@ impl App {
         );
     }
 
-
     /* -------------------------------------------------------------- terminal */
 
     fn terminal(&mut self, ui: &mut egui::Ui) {
@@ -299,7 +321,11 @@ impl App {
                 f.row_height(&font).max(1.0),
             )
         });
-        let cw = if wide > adv * 1.5 { wide / 2.0 } else { adv * 1.25 };
+        let cw = if wide > adv * 1.5 {
+            wide / 2.0
+        } else {
+            adv * 1.25
+        };
         let rh = rh0 * LINE_LEAD;
         /* stretch the Latin advance out to the cell so letters stop touching */
         let narrow_gap = (cw - adv).max(0.0);
@@ -389,7 +415,9 @@ impl App {
             let mut started = false;
 
             for c in 0..cols {
-                let Some(cell) = screen.cell(r, c) else { continue };
+                let Some(cell) = screen.cell(r, c) else {
+                    continue;
+                };
 
                 let mut fg = theme::ansi(cell.fgcolor());
                 let mut bg = if matches!(cell.bgcolor(), vt100::Color::Default) {
@@ -418,10 +446,7 @@ impl App {
 
                 if let Some(b) = bg {
                     painter.rect_filled(
-                        Rect::from_min_size(
-                            pos2(inner.left() + c as f32 * cw, y),
-                            vec2(cw, rh),
-                        ),
+                        Rect::from_min_size(pos2(inner.left() + c as f32 * cw, y), vec2(cw, rh)),
                         CornerRadius::ZERO,
                         b.gamma_multiply(flick),
                     );
@@ -442,7 +467,10 @@ impl App {
                         &mut run,
                         run_x + dx,
                         Row { y, h: rh },
-                        Style { font: &font, spacing: if run_wide { 0.0 } else { narrow_gap } },
+                        Style {
+                            font: &font,
+                            spacing: if run_wide { 0.0 } else { narrow_gap },
+                        },
                         run_fg.gamma_multiply(flick * 1.22),
                     );
                     run_x = inner.left() + c as f32 * cw;
@@ -457,7 +485,10 @@ impl App {
                 &mut run,
                 run_x + dx,
                 Row { y, h: rh },
-                Style { font: &font, spacing: if run_wide { 0.0 } else { narrow_gap } },
+                Style {
+                    font: &font,
+                    spacing: if run_wide { 0.0 } else { narrow_gap },
+                },
                 run_fg.gamma_multiply(flick * 1.22),
             );
         }
@@ -468,7 +499,10 @@ impl App {
             if cr < rows && cc < cols {
                 painter.rect_filled(
                     Rect::from_min_size(
-                        pos2(inner.left() + cc as f32 * cw + dx, inner.top() + cr as f32 * rh),
+                        pos2(
+                            inner.left() + cc as f32 * cw + dx,
+                            inner.top() + cr as f32 * rh,
+                        ),
                         vec2(cw, rh),
                     ),
                     CornerRadius::ZERO,
@@ -543,7 +577,12 @@ impl App {
         catches a room light */
         quad_grad(
             &painter,
-            [vis.left_top(), vis.right_top(), vis.right_bottom(), vis.left_bottom()],
+            [
+                vis.left_top(),
+                vis.right_top(),
+                vis.right_bottom(),
+                vis.left_bottom(),
+            ],
             [
                 Color32::from_rgba_unmultiplied(0xff, 0xe6, 0xc0, 15),
                 Color32::TRANSPARENT,
@@ -569,7 +608,9 @@ impl App {
     /// Useful for bug reports, and the only way to check the VT chain without
     /// eyeballing the window.
     fn dump(&mut self, rect: Rect, inner: Rect, cw: f32, rh: f32) {
-        let Ok(path) = std::env::var("P3_DUMP") else { return };
+        let Ok(path) = std::env::var("P3_DUMP") else {
+            return;
+        };
         let tick = self.started.elapsed().as_millis() / 500;
         if tick == self.dump_tick {
             return;
@@ -595,7 +636,10 @@ impl App {
             self.rx_total,
             self.pty.as_ref().and_then(|p| p.pid),
         );
-        s.push_str(&format!("# last chunk {:?}\n", String::from_utf8_lossy(&self.last_chunk)));
+        s.push_str(&format!(
+            "# last chunk {:?}\n",
+            String::from_utf8_lossy(&self.last_chunk)
+        ));
         s.push_str(&screen.contents());
         let _ = std::fs::write(path, s);
     }
@@ -682,7 +726,9 @@ fn selection_text(screen: &vt100::Screen, a: (u16, u16), b: (u16, u16)) -> Strin
         let c1 = if r == end.0 { end.1 } else { last_col };
         let mut line = String::new();
         for c in c0..=c1 {
-            let Some(cell) = screen.cell(r, c) else { continue };
+            let Some(cell) = screen.cell(r, c) else {
+                continue;
+            };
             /* the second half of a Han glyph carries no text of its own */
             if cell.is_wide_continuation() {
                 continue;
@@ -819,8 +865,16 @@ fn cabinet(p: &egui::Painter, outer: Rect, glass: Rect, t: f32) {
     /* power lamp: breathing, never blinking */
     let pulse = 0.68 + 0.18 * (t * 1.9).sin();
     let led = pos2(outer.right() - 17.0, outer.bottom() - 11.0);
-    p.circle_filled(led, 4.5, Color32::from_rgba_unmultiplied(0xff, 0x9a, 0x20, (26.0 * pulse) as u8));
-    p.circle_filled(led, 2.0, Color32::from_rgba_unmultiplied(0xff, 0xb8, 0x1c, (235.0 * pulse) as u8));
+    p.circle_filled(
+        led,
+        4.5,
+        Color32::from_rgba_unmultiplied(0xff, 0x9a, 0x20, (26.0 * pulse) as u8),
+    );
+    p.circle_filled(
+        led,
+        2.0,
+        Color32::from_rgba_unmultiplied(0xff, 0xb8, 0x1c, (235.0 * pulse) as u8),
+    );
 }
 
 /// Faint phosphor haze in the middle of the face. Without it the empty part of
@@ -830,8 +884,16 @@ fn haze(p: &egui::Painter, vis: Rect) {
     let clear = Color32::TRANSPARENT;
     let (l, r, t, b) = (vis.left(), vis.right(), vis.top(), vis.bottom());
     let cy = vis.center().y;
-    quad_grad(p, [pos2(l, t), pos2(r, t), pos2(r, cy), pos2(l, cy)], [clear, clear, mid, mid]);
-    quad_grad(p, [pos2(l, cy), pos2(r, cy), pos2(r, b), pos2(l, b)], [mid, mid, clear, clear]);
+    quad_grad(
+        p,
+        [pos2(l, t), pos2(r, t), pos2(r, cy), pos2(l, cy)],
+        [clear, clear, mid, mid],
+    );
+    quad_grad(
+        p,
+        [pos2(l, cy), pos2(r, cy), pos2(r, b), pos2(l, b)],
+        [mid, mid, clear, clear],
+    );
 }
 
 /// Light caught on the inside of the glass, just off the bezel. Without this the
@@ -916,7 +978,14 @@ fn window_buttons(ui: &mut egui::Ui, maximized: bool) -> Option<WBtn> {
     /* right-to-left layout: list them in reverse so close sits at the corner */
     let specs = [
         (WBtn::Close, Glyph::Close),
-        (WBtn::Max, if maximized { Glyph::Restore } else { Glyph::Max }),
+        (
+            WBtn::Max,
+            if maximized {
+                Glyph::Restore
+            } else {
+                Glyph::Max
+            },
+        ),
         (WBtn::Min, Glyph::Min),
     ];
     for (btn, glyph) in specs {
@@ -927,10 +996,22 @@ fn window_buttons(ui: &mut egui::Ui, maximized: bool) -> Option<WBtn> {
         let p = ui.painter();
 
         /* the key sits in its own hole in the plate */
-        p.rect_filled(key, CornerRadius::ZERO, if hot { theme::AMBER_DIM } else { theme::BG_DEEP });
+        p.rect_filled(
+            key,
+            CornerRadius::ZERO,
+            if hot {
+                theme::AMBER_DIM
+            } else {
+                theme::BG_DEEP
+            },
+        );
 
         /* bevel: light on the top-left, shadow on the bottom-right */
-        let lit = if hot { theme::AMBER_HOT } else { theme::AMBER_FAINT };
+        let lit = if hot {
+            theme::AMBER_HOT
+        } else {
+            theme::AMBER_FAINT
+        };
         let st = Stroke::new(1.0, lit);
         p.line_segment([key.left_top(), key.right_top()], st);
         p.line_segment([key.left_top(), key.left_bottom()], st);
@@ -939,7 +1020,12 @@ fn window_buttons(ui: &mut egui::Ui, maximized: bool) -> Option<WBtn> {
         p.line_segment([key.right_top(), key.right_bottom()], sh);
 
         /* dark surround so the key reads as a separate part */
-        p.rect_stroke(rect, CornerRadius::ZERO, Stroke::new(1.0, Color32::from_black_alpha(120)), StrokeKind::Outside);
+        p.rect_stroke(
+            rect,
+            CornerRadius::ZERO,
+            Stroke::new(1.0, Color32::from_black_alpha(120)),
+            StrokeKind::Outside,
+        );
 
         let col = match (hot, close) {
             (true, _) => theme::BG_DEEP,
@@ -979,8 +1065,18 @@ fn draw_glyph(p: &egui::Painter, rect: Rect, g: Glyph, col: Color32) {
         Glyph::Restore => {
             let back = Rect::from_center_size(c - vec2(1.4, 1.4), vec2(s * 1.7, s * 1.4));
             let front = Rect::from_center_size(c + vec2(1.4, 1.4), vec2(s * 1.7, s * 1.4));
-            p.rect_stroke(back, CornerRadius::ZERO, Stroke::new(1.6, col), StrokeKind::Inside);
-            p.rect_stroke(front, CornerRadius::ZERO, Stroke::new(1.6, col), StrokeKind::Inside);
+            p.rect_stroke(
+                back,
+                CornerRadius::ZERO,
+                Stroke::new(1.6, col),
+                StrokeKind::Inside,
+            );
+            p.rect_stroke(
+                front,
+                CornerRadius::ZERO,
+                Stroke::new(1.6, col),
+                StrokeKind::Inside,
+            );
         }
         Glyph::Close => {
             p.line_segment([pos2(c.x - s, c.y - s), pos2(c.x + s, c.y + s)], st);
@@ -1011,10 +1107,21 @@ impl eframe::App for App {
             /* the marks belong to the rows that were on screen a moment ago */
             self.sel = None;
         }
-        if !pump.bytes.is_empty() {
+        if !pump.inputs.is_empty() {
             self.term.scroll_to_bottom();
+            /* pump_pty ran first this frame, so the screen already tells us
+            whether the shell asked for bracketed paste. Without the markers a
+            multi-line paste would be executed one line at a time. */
+            let bracketed = self.term.screen().bracketed_paste();
             if let Some(p) = self.pty.as_mut() {
-                p.write(&pump.bytes);
+                for piece in pump.inputs {
+                    match piece {
+                        input::Input::Bytes(bytes) => p.write(&bytes),
+                        input::Input::Paste(text) => {
+                            p.write(&input::paste_bytes(&text, bracketed));
+                        }
+                    }
+                }
             }
         }
         if pump.toggle_scan {

@@ -8,8 +8,16 @@
 
 use eframe::egui::{self, Event, Key, Modifiers};
 
+/// One input event, in the order egui delivered it. Paste is a separate variant
+/// because it may need bracketed-paste markers wrapped around it by the caller,
+/// which is the only place that knows whether the shell enabled that mode.
+pub enum Input {
+    Bytes(Vec<u8>),
+    Paste(Vec<u8>),
+}
+
 pub struct Pump {
-    pub bytes: Vec<u8>,
+    pub inputs: Vec<Input>,
     pub scroll: i32,
     /// 1 = bigger, -1 = smaller, 9 = reset, 0 = untouched
     pub zoom: i8,
@@ -29,7 +37,7 @@ pub struct Pump {
 /// have no working interrupt at all — Ctrl+C would look like it did nothing.
 pub fn pump(ctx: &egui::Context) -> Pump {
     let mut out = Pump {
-        bytes: Vec::new(),
+        inputs: Vec::new(),
         scroll: 0,
         zoom: 0,
         respawn: false,
@@ -43,12 +51,17 @@ pub fn pump(ctx: &egui::Context) -> Pump {
 
         for ev in events {
             match ev {
-                Event::Text(t) => out.bytes.extend_from_slice(t.as_bytes()),
-                Event::Paste(t) => out.bytes.extend_from_slice(t.as_bytes()),
+                Event::Text(t) => push_bytes(&mut out.inputs, t.as_bytes()),
+                Event::Paste(t) => out.inputs.push(Input::Paste(t.into_bytes())),
                 /* egui ate the keystroke, so hand the shell what xterm would have sent */
-                Event::Copy => out.bytes.push(0x03),
-                Event::Cut => out.bytes.push(0x18),
-                Event::Key { key, pressed: true, modifiers, .. } => {
+                Event::Copy => push_bytes(&mut out.inputs, &[0x03]),
+                Event::Cut => push_bytes(&mut out.inputs, &[0x18]),
+                Event::Key {
+                    key,
+                    pressed: true,
+                    modifiers,
+                    ..
+                } => {
                     if key == Key::F5 {
                         out.respawn = true;
                         continue;
@@ -67,13 +80,25 @@ pub fn pump(ctx: &egui::Context) -> Pump {
                     }
                     if modifiers.ctrl && !modifiers.alt {
                         match key {
-                            Key::Plus | Key::Equals => { out.zoom = 1; continue; }
-                            Key::Minus => { out.zoom = -1; continue; }
-                            Key::Num0 => { out.zoom = 9; continue; }
+                            Key::Plus | Key::Equals => {
+                                out.zoom = 1;
+                                continue;
+                            }
+                            Key::Minus => {
+                                out.zoom = -1;
+                                continue;
+                            }
+                            Key::Num0 => {
+                                out.zoom = 9;
+                                continue;
+                            }
                             _ => {}
                         }
                     }
-                    push_key(&mut out.bytes, key, modifiers);                }
+                    if let Some(bytes) = key_bytes(key, modifiers) {
+                        push_bytes(&mut out.inputs, &bytes);
+                    }
+                }
                 Event::MouseWheel { delta, .. } => {
                     out.scroll += delta.y.round() as i32;
                 }
@@ -87,10 +112,29 @@ pub fn pump(ctx: &egui::Context) -> Pump {
     out
 }
 
-fn push_key(out: &mut Vec<u8>, key: Key, m: Modifiers) {
-    if let Some(bytes) = key_bytes(key, m) {
-        out.extend_from_slice(&bytes);
+/// Adjacent key events share one allocation; a paste never merges with them,
+/// because it may need a wrapper that applies to the paste alone.
+fn push_bytes(inputs: &mut Vec<Input>, bytes: &[u8]) {
+    if let Some(Input::Bytes(last)) = inputs.last_mut() {
+        last.extend_from_slice(bytes);
+    } else {
+        inputs.push(Input::Bytes(bytes.to_vec()));
     }
+}
+
+/// Clipboard content as an xterm sends it. When the shell enabled bracketed
+/// paste (`ESC[?2004h`), the text must be wrapped in DCS markers: without them a
+/// multi-line paste is fed to the line editor as if someone had typed Enter on
+/// every line, which can run commands before the user has seen them.
+pub fn paste_bytes(text: &[u8], bracketed: bool) -> Vec<u8> {
+    if !bracketed {
+        return text.to_vec();
+    }
+    let mut out = Vec::with_capacity(text.len() + 12);
+    out.extend_from_slice(b"\x1b[200~");
+    out.extend_from_slice(text);
+    out.extend_from_slice(b"\x1b[201~");
+    out
 }
 
 /// Pure mapping from an egui key to the bytes an xterm would send.
@@ -98,10 +142,11 @@ fn push_key(out: &mut Vec<u8>, key: Key, m: Modifiers) {
 /// Returns `None` for printable keys on purpose: those arrive as `Event::Text`
 /// and handling them here as well would double every keystroke.
 pub fn key_bytes(key: Key, m: Modifiers) -> Option<Vec<u8>> {
-    if m.ctrl && !m.alt {
-        if let Some(b) = ctrl_byte(key) {
-            return Some(vec![b]);
-        }
+    if m.ctrl
+        && !m.alt
+        && let Some(b) = ctrl_byte(key)
+    {
+        return Some(vec![b]);
     }
 
     let seq: &[u8] = match key {
@@ -224,5 +269,32 @@ mod tests {
         assert_eq!(ctrl(Key::C), Some(vec![0x03]));
         /* a modified arrow has no C0 mapping, so the plain CSI form goes through */
         assert_eq!(ctrl(Key::ArrowRight), Some(b"\x1b[C".to_vec()));
+    }
+
+    #[test]
+    fn paste_is_plain_without_bracketed_mode() {
+        assert_eq!(paste_bytes(b"echo hi\r\n", false), b"echo hi\r\n".to_vec());
+    }
+
+    #[test]
+    fn bracketed_paste_wraps_the_whole_text_including_newlines() {
+        let text = b"echo one\r\necho two";
+        assert_eq!(
+            paste_bytes(text, true),
+            b"\x1b[200~echo one\r\necho two\x1b[201~".to_vec()
+        );
+    }
+
+    #[test]
+    fn adjacent_key_events_share_one_piece_but_paste_stays_separate() {
+        let mut inputs = Vec::new();
+        push_bytes(&mut inputs, b"a");
+        push_bytes(&mut inputs, b"b");
+        inputs.push(Input::Paste(b"x".to_vec()));
+        push_bytes(&mut inputs, b"c");
+        assert_eq!(inputs.len(), 3);
+        assert!(matches!(&inputs[0], Input::Bytes(b) if b == b"ab"));
+        assert!(matches!(&inputs[1], Input::Paste(b) if b == b"x"));
+        assert!(matches!(&inputs[2], Input::Bytes(b) if b == b"c"));
     }
 }

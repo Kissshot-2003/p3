@@ -8,7 +8,7 @@
 use std::io::{Read, Write};
 use std::sync::mpsc::{self, Receiver, TryRecvError};
 
-use portable_pty::{native_pty_system, Child, CommandBuilder, MasterPty, PtySize};
+use portable_pty::{Child, CommandBuilder, MasterPty, PtySize, native_pty_system};
 
 /// A shell we know how to start.
 pub struct ShellSpec {
@@ -32,7 +32,10 @@ const PS_INIT: &str = concat!(
 /// command-line quoting entirely — the plain `-Command` form loses the inner
 /// quotes of the colour hashtable and the shell then starts up mute.
 fn encoded_command(script: &str) -> String {
-    let bytes: Vec<u8> = script.encode_utf16().flat_map(|u| u.to_le_bytes()).collect();
+    let bytes: Vec<u8> = script
+        .encode_utf16()
+        .flat_map(|u| u.to_le_bytes())
+        .collect();
     base64(&bytes)
 }
 
@@ -46,8 +49,16 @@ fn base64(bytes: &[u8]) -> String {
         let n = (b0 << 16) | (b1 << 8) | b2;
         out.push(T[(n >> 18) as usize & 63] as char);
         out.push(T[(n >> 12) as usize & 63] as char);
-        out.push(if c.len() > 1 { T[(n >> 6) as usize & 63] as char } else { '=' });
-        out.push(if c.len() > 2 { T[n as usize & 63] as char } else { '=' });
+        out.push(if c.len() > 1 {
+            T[(n >> 6) as usize & 63] as char
+        } else {
+            '='
+        });
+        out.push(if c.len() > 2 {
+            T[n as usize & 63] as char
+        } else {
+            '='
+        });
     }
     out
 }
@@ -63,10 +74,13 @@ fn powershell_args() -> Vec<String> {
 
 impl ShellSpec {
     pub fn detect() -> Self {
-        if let Ok(p) = std::env::var("P3_SHELL") {
-            if !p.trim().is_empty() {
-                return Self { program: p, args: Vec::new() };
-            }
+        if let Ok(p) = std::env::var("P3_SHELL")
+            && !p.trim().is_empty()
+        {
+            return Self {
+                program: p,
+                args: Vec::new(),
+            };
         }
         #[cfg(windows)]
         {
@@ -84,7 +98,10 @@ impl ShellSpec {
         #[cfg(not(windows))]
         {
             let sh = std::env::var("SHELL").unwrap_or_else(|_| "/bin/bash".into());
-            Self { program: sh, args: vec!["-l".into()] }
+            Self {
+                program: sh,
+                args: vec!["-l".into()],
+            }
         }
     }
 }
@@ -120,7 +137,12 @@ impl PtySession {
     ) -> Result<Self, String> {
         let pty = native_pty_system();
         let pair = pty
-            .openpty(PtySize { rows, cols, pixel_width: 0, pixel_height: 0 })
+            .openpty(PtySize {
+                rows,
+                cols,
+                pixel_width: 0,
+                pixel_height: 0,
+            })
             .map_err(|e| format!("openpty: {e}"))?;
 
         let mut cmd = CommandBuilder::new(&spec.program);
@@ -139,8 +161,14 @@ impl PtySession {
             .map_err(|e| format!("启动 {} 失败: {e}", spec.program))?;
         drop(pair.slave);
 
-        let mut reader = pair.master.try_clone_reader().map_err(|e| format!("reader: {e}"))?;
-        let writer = pair.master.take_writer().map_err(|e| format!("writer: {e}"))?;
+        let mut reader = pair
+            .master
+            .try_clone_reader()
+            .map_err(|e| format!("reader: {e}"))?;
+        let writer = pair
+            .master
+            .take_writer()
+            .map_err(|e| format!("writer: {e}"))?;
         let pid = child.process_id();
 
         let (tx, rx) = mpsc::channel::<Vec<u8>>();
